@@ -29,9 +29,11 @@ cargo run
 This will create a `magic-data` directory with the following structure:
 ```
 magic-data/
-├── train/
-├── test/
-└── valid/
+├── data/
+│   ├── train/
+│   ├── test/
+│   └── valid/
+└── magic-cards.json
 ```
 
 Specify a custom output directory:
