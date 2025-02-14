@@ -5,7 +5,7 @@ use serde::Deserialize;
 use reqwest::blocking::Client;
 
 // Map our data types to Scryfall's types
-pub const BULK_DATA_TYPES: [&str; 5] = ["unique_artwork", "oracle_cards", "default_cards", "rulings", "all_cards"];
+pub const BULK_DATA_TYPES: [&str; 4] = ["unique_artwork", "oracle_cards", "default_cards", "all_cards"];
 
 // Map DataType enum to Scryfall's type strings
 pub fn get_scryfall_type(data_type: &super::DataType) -> &'static str {
@@ -13,7 +13,6 @@ pub fn get_scryfall_type(data_type: &super::DataType) -> &'static str {
         super::DataType::Unique => "unique_artwork",
         super::DataType::Oracle => "oracle_cards",
         super::DataType::Default => "default_cards",
-        super::DataType::Ruling => "rulings",
         super::DataType::All => "all_cards",
     }
 }
@@ -31,6 +30,22 @@ struct BulkDataResponse {
     object: String,
     #[serde(default)]
     data: Vec<BulkDataItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImageUris {
+    small: String,
+    normal: String,
+    large: String,
+    png: String,
+    art_crop: String,
+    border_crop: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Card {
+    id: String,
+    image_uris: Option<ImageUris>,
 }
 
 pub fn ensure_directories(base_path: &str) -> io::Result<()> {
@@ -154,4 +169,50 @@ pub fn fetch_bulk_data(directory: &str, data_type: &super::DataType) -> io::Resu
     }
     
     Ok(downloaded_files)
+}
+
+pub fn download_card_images(json_path: &str, output_dir: &str) -> io::Result<()> {
+    let client = Client::new();
+    let images_dir = Path::new(output_dir).join("data/train");
+    fs::create_dir_all(&images_dir)?;
+
+    // Read and parse the JSON file
+    let json_content = fs::read_to_string(json_path)?;
+    let cards: Vec<Card> = serde_json::from_str(&json_content)?;
+    let total_cards = cards.len();
+
+    println!("Found {} cards in JSON file", total_cards);
+    let mut downloaded = 0;
+
+    for card in cards {
+        if let Some(image_uris) = card.image_uris {
+            let image_path = images_dir.join(format!("{}.png", card.id));
+            
+            // Skip if image already exists
+            if image_path.exists() {
+                println!("Image already exists: {}", image_path.display());
+                downloaded += 1;
+                continue;
+            }
+
+            print!("\rDownloading image for card ID: {} ({}/{})", card.id, downloaded + 1, total_cards);
+            io::stdout().flush().ok();
+
+            match client.get(&image_uris.png)
+                .header("User-Agent", "OjoFetchMagic/1.0")
+                .send() {
+                Ok(mut response) => {
+                    let mut file = fs::File::create(&image_path)?;
+                    io::copy(&mut response, &mut file)?;
+                    downloaded += 1;
+                },
+                Err(e) => {
+                    eprintln!("\nError downloading image for card {}: {}", card.id, e);
+                }
+            }
+        }
+    }
+
+    println!("\nSuccessfully downloaded {} card images", downloaded);
+    Ok(())
 }

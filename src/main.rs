@@ -1,5 +1,6 @@
 use clap::Parser;
 use clap::ValueEnum;
+use std::path::Path;
 mod utils;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -10,8 +11,6 @@ enum DataType {
     Oracle,
     /// Default cards
     Default,
-    /// Ruling cards
-    Ruling,
     /// All cards
     All,
 }
@@ -24,8 +23,8 @@ struct Args {
     #[arg(short, long, default_value = "magic-data")]
     path: String,
 
-    /// Type of card data to fetch (unique, oracle, default, ruling, all)
-    #[arg(short, long, value_enum, default_value_t = DataType::Ruling)]
+    /// Type of card data to fetch (unique, oracle, default, all)
+    #[arg(short, long, value_enum, default_value_t = DataType::Default)]
     data: DataType,
 }
 
@@ -47,6 +46,20 @@ fn main() -> std::io::Result<()> {
             }
         }
         Err(e) => eprintln!("Error fetching bulk data: {}", e),
+    }
+
+    // Download images in the json file
+    let data_type = utils::get_scryfall_type(&args.data);
+    let json_path = Path::new(&args.path).join(format!("{}.json", data_type));
+    
+    if json_path.exists() {
+        println!("\nDownloading card images...");
+        match utils::download_card_images(json_path.to_str().unwrap(), &args.path) {
+            Ok(_) => println!("Image download completed successfully!"),
+            Err(e) => eprintln!("Error downloading images: {}", e),
+        }
+    } else {
+        eprintln!("JSON file not found: {}", json_path.display());
     }
 
     Ok(())
