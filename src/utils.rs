@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::Path;
-use std::io::{self, Write, Read};
+use std::io::{self, Write};
 use serde::Deserialize;
-use reqwest::blocking::Client;
+use tokio;
+use futures::future::join_all;
+use reqwest;
+use indicatif::{ProgressBar, ProgressStyle};
 
 // Map our data types to Scryfall's types
 pub const BULK_DATA_TYPES: [&str; 4] = ["unique_artwork", "oracle_cards", "default_cards", "all_cards"];
@@ -84,95 +87,81 @@ pub fn check_json_files(directory: &str) -> Vec<String> {
         .collect()
 }
 
-fn download_json_data(data_type: &str, download_uri: &str, directory: &str) -> io::Result<String> {
-    let client = Client::new();
+async fn download_json_data(data_type: &str, download_uri: &str, directory: &str) -> io::Result<String> {
+    let client = reqwest::Client::new();
     let file_path = Path::new(directory).join(format!("{}.json", data_type));
     
     println!("Downloading {} data...", data_type);
     
-    let mut response = client.get(download_uri)
+    let response = client.get(download_uri)
         .header("User-Agent", "OjoFetchMagic/1.0")
         .send()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    let total_size = response.content_length().unwrap_or(0);
-    let mut downloaded = 0;
-    let mut file = fs::File::create(&file_path)?;
-    let mut buffer = vec![0; 8192]; // 8KB buffer
-    
-    loop {
-        let bytes_read = response.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        downloaded += bytes_read as u64;
-        if total_size > 0 {
-            print!("\rDownloading... {:.1}%", (downloaded as f64 / total_size as f64) * 100.0);
-        } else {
-            print!("\rDownloaded: {} bytes", downloaded);
-        }
-        io::stdout().flush().ok();
-        file.write_all(&buffer[..bytes_read])?;
-    }
-    println!("\nSuccessfully downloaded: {}", file_path.display());
-    
+    let bytes = response.bytes()
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    tokio::fs::write(&file_path, &bytes)
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to write file: {}", e)))?;
+
+    println!("Successfully downloaded: {}", file_path.display());
     Ok(file_path.to_string_lossy().into_owned())
 }
 
-pub fn fetch_bulk_data(directory: &str, data_type: &super::DataType) -> io::Result<Vec<String>> {
+pub async fn fetch_bulk_data(directory: &str, data_type: &super::DataType) -> io::Result<Vec<String>> {
     let target_type = get_scryfall_type(data_type);
     let existing_files = check_json_files(directory);
     
-    // Check if the file we want already exists
-    if let Some(existing_file) = existing_files.iter().find(|file| {
-        file.contains(&format!("{}.json", target_type))
-    }) {
-        println!("JSON file already exists: {}", existing_file);
-        return Ok(vec![existing_file.clone()]);
+    // Check if we already have the JSON file
+    if !existing_files.is_empty() {
+        println!("Using existing JSON files");
+        return Ok(existing_files);
     }
     
     println!("Fetching bulk data from Scryfall API...");
-    let client = Client::new();
+    let client = reqwest::Client::new();
+
     let response = client.get("https://api.scryfall.com/bulk-data")
         .header("User-Agent", "OjoFetchMagic/1.0")
         .send()
+        .await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Request error: {}", e)))?;
 
     println!("Response status: {}", response.status());
     
-    // Get the response text for debugging
     let response_text = response.text()
+        .await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to get response text: {}", e)))?;
     
-    // Parse the JSON
     let bulk_data: BulkDataResponse = serde_json::from_str(&response_text)
-        .map_err(|e| {
-            eprintln!("Response body: {}", &response_text);
-            io::Error::new(io::ErrorKind::Other, format!("JSON parse error: {}", e))
-        })?;
-        
-    if bulk_data.object != "list" {
-        return Err(io::Error::new(io::ErrorKind::Other, "Failed to fetch bulk data: unexpected response format"));
-    }
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to parse JSON: {}", e)))?;
     
     let mut downloaded_files = Vec::new();
     
-    // Find and download only the requested data type
-    if let Some(item) = bulk_data.data.into_iter().find(|item| item.data_type == target_type) {
-        println!("Found bulk data item: {} ({})", item.name, item.data_type);
-        match download_json_data(&item.data_type, &item.download_uri, directory) {
-            Ok(file) => downloaded_files.push(file),
-            Err(e) => eprintln!("Failed to download {}: {}", item.data_type, e),
+    // Find and download the requested data type
+    for item in bulk_data.data {
+        if item.data_type == target_type {
+            let file_path = download_json_data(&target_type, &item.download_uri, directory).await?;
+            downloaded_files.push(file_path);
+            break;
         }
-    } else {
-        return Err(io::Error::new(io::ErrorKind::Other, format!("Bulk data type '{}' not found", target_type)));
+    }
+    
+    if downloaded_files.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Data type '{}' not found in Scryfall bulk data", target_type),
+        ));
     }
     
     Ok(downloaded_files)
 }
 
-pub fn download_card_images(json_path: &str, output_dir: &str, amount: Option<&str>) -> io::Result<()> {
-    let client = Client::new();
+pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Option<&str>) -> io::Result<()> {
+    let client = reqwest::Client::new();
     let images_dir = Path::new(output_dir).join("data/train");
     fs::create_dir_all(&images_dir)?;
 
@@ -193,37 +182,69 @@ pub fn download_card_images(json_path: &str, output_dir: &str, amount: Option<&s
     
     let total_cards = cards.len();
     println!("Found {} cards in JSON file, downloading {} cards", total_cards, total_cards);
-    let mut downloaded = 0;
 
-    for card in cards {
-        if let Some(image_uris) = card.image_uris {
+    let pb = ProgressBar::new(total_cards as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+        .unwrap()
+        .progress_chars("#>-"));
+
+    let pb_clone = pb.clone();
+    
+    let downloads = cards.into_iter()
+        .filter_map(|card| {
+            let image_uris = card.image_uris?;
             let image_path = images_dir.join(format!("{}.png", card.id));
+            let client = client.clone();
+            let pb = pb_clone.clone();
             
             // Skip if image already exists
             if image_path.exists() {
-                println!("Image already exists: {}", image_path.display());
-                downloaded += 1;
-                continue;
+                pb.inc(1);
+                return None;
             }
 
-            print!("\rDownloading image for card ID: {} ({}/{})", card.id, downloaded + 1, total_cards);
-            io::stdout().flush().ok();
-
-            match client.get(&image_uris.png)
-                .header("User-Agent", "OjoFetchMagic/1.0")
-                .send() {
-                Ok(mut response) => {
-                    let mut file = fs::File::create(&image_path)?;
-                    io::copy(&mut response, &mut file)?;
-                    downloaded += 1;
-                },
-                Err(e) => {
-                    eprintln!("\nError downloading image for card {}: {}", card.id, e);
+            Some(async move {
+                match client.get(&image_uris.png)
+                    .header("User-Agent", "OjoFetchMagic/1.0")
+                    .send()
+                    .await {
+                    Ok(response) => {
+                        if let Ok(bytes) = response.bytes().await {
+                            if let Ok(_) = tokio::fs::write(&image_path, &bytes).await {
+                                pb.inc(1);
+                                Ok(())
+                            } else {
+                                Err(format!("Failed to write image: {}", card.id))
+                            }
+                        } else {
+                            Err(format!("Failed to get bytes for image: {}", card.id))
+                        }
+                    },
+                    Err(e) => {
+                        Err(format!("Failed to download image {}: {}", card.id, e))
+                    }
                 }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let results = join_all(downloads).await;
+    pb.finish_with_message("Download completed");
+
+    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter()
+        .partition(|r| r.is_ok());
+
+    println!("\nSuccessfully downloaded {} card images", successes.len());
+    
+    if !failures.is_empty() {
+        println!("\nFailed to download {} images:", failures.len());
+        for error in failures {
+            if let Err(e) = error {
+                eprintln!("  - {}", e);
             }
         }
     }
 
-    println!("\nSuccessfully downloaded {} card images", downloaded);
     Ok(())
 }

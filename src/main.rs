@@ -32,7 +32,8 @@ struct Args {
     amount: Option<String>,
 }
 
-fn main() -> std::io::Result<()> {
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
     println!("Path: {}", args.path);
@@ -42,7 +43,7 @@ fn main() -> std::io::Result<()> {
     utils::ensure_directories(&args.path)?;
 
     // Fetch and download JSON file for the selected data type
-    match utils::fetch_bulk_data(&args.path, &args.data) {
+    match utils::fetch_bulk_data(&args.path, &args.data).await {
         Ok(files) => {
             println!("\nDownloaded JSON files:");
             for file in files {
@@ -62,7 +63,7 @@ fn main() -> std::io::Result<()> {
             json_path.to_str().unwrap(), 
             &args.path,
             args.amount.as_deref()
-        ) {
+        ).await {
             Ok(_) => println!("Image download completed successfully!"),
             Err(e) => eprintln!("Error downloading images: {}", e),
         }
