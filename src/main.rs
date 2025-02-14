@@ -61,6 +61,12 @@ async fn main() -> std::io::Result<()> {
                     return Err(e);
                 }
             }
+
+            // Split dataset into test and valid sets
+            if let Err(e) = utils::split_dataset(&args.path) {
+                eprintln!("Error splitting dataset: {}", e);
+                return Err(e);
+            }
         }
         Err(e) => eprintln!("Error fetching bulk data: {}", e),
     }

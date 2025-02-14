@@ -7,6 +7,7 @@ use futures::stream::StreamExt;
 use reqwest;
 use indicatif::{ProgressBar, ProgressStyle};
 use image::{ImageBuffer, RgbImage};
+use rand::seq::SliceRandom;
 
 // Map our data types to Scryfall's types
 pub const BULK_DATA_TYPES: [&str; 4] = ["unique_artwork", "oracle_cards", "default_cards", "all_cards"];
@@ -36,7 +37,7 @@ struct BulkDataResponse {
 
 #[derive(Debug, Deserialize)]
 struct ImageUris {
-    border_crop: String,
+    png: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +197,9 @@ fn process_image(image_path: &Path) -> io::Result<()> {
     // Save the processed image as JPEG with high quality
     new_img.save_with_format(&new_image_path, image::ImageFormat::Jpeg)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // Delete the original png image
+    fs::remove_file(image_path)?;
     
     Ok(())
 }
@@ -207,21 +211,29 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
 
     // Read and parse the JSON file
     let json_content = fs::read_to_string(json_path)?;
-    let mut cards: Vec<Card> = serde_json::from_str(&json_content)?;
+    let cards: Vec<Card> = serde_json::from_str(&json_content)?;
+    
+    // Filter cards that have image URIs first
+    let cards_with_images: Vec<_> = cards.into_iter()
+        .filter(|card| card.image_uris.is_some())
+        .collect();
+    
+    let total_available = cards_with_images.len();
     
     // Handle amount parameter
+    let mut cards_to_process = cards_with_images;
     if let Some(amt) = amount {
         if amt != "all" {
             if let Ok(limit) = amt.parse::<usize>() {
-                cards.truncate(limit);
+                cards_to_process.truncate(limit);
             } else {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid amount value"));
             }
         }
     }
     
-    let total_cards = cards.len();
-    println!("Found {} cards in JSON file, downloading {} cards using {} threads", total_cards, total_cards, thread_count);
+    let total_cards = cards_to_process.len();
+    println!("Found {} cards with images, downloading {} cards using {} threads", total_available, total_cards, thread_count);
 
     let pb = ProgressBar::new(total_cards as u64);
     pb.set_style(ProgressStyle::default_bar()
@@ -231,11 +243,10 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
 
     let pb_clone = pb.clone();
     
-    let downloads = cards.into_iter()
-        .filter_map(|card| {
-            let image_uris = card.image_uris?;
-            // Get the extension from the URL by removing query parameters and getting the last part
-            let extension = image_uris.border_crop
+    let downloads = cards_to_process.into_iter()
+        .map(|card| {
+            let image_uris = card.image_uris.unwrap();
+            let extension = image_uris.png
                 .split('?')
                 .next()
                 .and_then(|url| url.rsplit('.').next())
@@ -243,15 +254,15 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
             let image_path = images_dir.join(format!("{}.{}", card.id, extension));
             let client = client.clone();
             let pb = pb_clone.clone();
+            
+            async move {
+                // Skip if image already exists
+                if image_path.exists() {
+                    pb.inc(1);
+                    return Ok(());
+                }
 
-            // Skip if image already exists
-            if image_path.exists() {
-                pb.inc(1);
-                return None;
-            }
-
-            Some(async move {
-                match client.get(&image_uris.border_crop)
+                match client.get(&image_uris.png)
                     .header("User-Agent", "OjoFetchMagic/1.0")
                     .send()
                     .await {
@@ -274,7 +285,7 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
                     },
                     Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string()))
                 }
-            })
+            }
         })
         .collect::<Vec<_>>();
 
@@ -296,5 +307,68 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
         return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to download {} images", failures.len())));
     }
 
+    Ok(())
+}
+
+pub fn split_dataset(base_path: &str) -> io::Result<()> {
+    let train_dir = Path::new(base_path).join("data/train");
+    let test_dir = Path::new(base_path).join("data/test");
+    let valid_dir = Path::new(base_path).join("data/valid");
+    
+    // Create directories if they don't exist
+    fs::create_dir_all(&test_dir)?;
+    fs::create_dir_all(&valid_dir)?;
+    
+    // Get all jpg files from train directory
+    let mut entries: Vec<_> = fs::read_dir(&train_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension()?.to_str()? == "jpg" {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+    
+    // Calculate number of images for test set (5%) and valid set (1%)
+    let test_count = (entries.len() as f32 * 0.05).ceil() as usize;
+    let valid_count = (entries.len() as f32 * 0.01).ceil() as usize;
+    
+    if test_count == 0 || valid_count == 0 {
+        println!("Not enough images to create test/valid sets (need at least 100 images)");
+        return Ok(());
+    }
+    
+    // Randomly shuffle the entries
+    let mut rng = rand::rng();
+    entries.shuffle(&mut rng);
+    
+    // Take the first 5% for test set and next 1% for valid set
+    let test_images = &entries[..test_count];
+    let valid_images = &entries[..valid_count];
+    
+    // Copy images to test directory
+    for src_path in test_images {
+        let file_name = src_path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "Failed to get filename")
+        })?;
+        let dest_path = test_dir.join(file_name);
+        
+        fs::copy(src_path, &dest_path)?;
+    }
+
+    // Copy images to valid directory
+    for src_path in valid_images {
+        let file_name = src_path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "Failed to get filename")
+        })?;
+        let dest_path = valid_dir.join(file_name);
+        
+        fs::copy(src_path, &dest_path)?;
+    }
+    
+    println!("Dataset split complete: {} images in test set, {} images in valid set", test_count, valid_count);
     Ok(())
 }
