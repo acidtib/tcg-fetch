@@ -1,6 +1,5 @@
 use clap::Parser;
 use clap::ValueEnum;
-use std::path::Path;
 use std::thread;
 mod utils;
 
