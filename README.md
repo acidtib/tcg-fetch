@@ -5,7 +5,7 @@ A Rust CLI tool to fetch Magic: The Gathering card data from the Scryfall API. T
 ## Features
 
 - Fetches card data from Scryfall API
-- Downloads different types of card data (unique artwork, oracle cards, default cards, rulings, or all cards)
+- Downloads different types of card data (unique artwork, oracle cards, default cards, or all cards)
 - Organizes data into train/test/validation sets
 - Command-line interface with customizable output path
 - Checks for existing files to avoid unnecessary downloads
@@ -35,7 +35,6 @@ Specify the type of data to fetch using the `--data` or `-d` flag:
 cargo run -- --data unique    # Download unique artwork data
 cargo run -- --data oracle    # Download oracle cards data
 cargo run -- --data default   # Download default cards data
-cargo run -- --data ruling    # Download rulings data
 cargo run -- --data all       # Download all cards data
 ```
 
