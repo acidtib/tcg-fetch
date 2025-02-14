@@ -324,7 +324,7 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     fs::create_dir_all(&valid_dir)?;
     
     // Get all jpg files from train directory
-    let mut entries: Vec<_> = fs::read_dir(&train_dir)?
+    let mut train_files: Vec<_> = fs::read_dir(&train_dir)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
@@ -335,44 +335,84 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
             }
         })
         .collect();
+
+    // Get existing test and valid files
+    let existing_test_files: Vec<_> = fs::read_dir(&test_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension()?.to_str()? == "jpg" {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let existing_valid_files: Vec<_> = fs::read_dir(&valid_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension()?.to_str()? == "jpg" {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let total_images = train_files.len() + existing_test_files.len() + existing_valid_files.len();
     
-    // Calculate number of images for test set (5%) and valid set (1%)
-    let test_count = (entries.len() as f32 * 0.05).ceil() as usize;
-    let valid_count = (entries.len() as f32 * 0.01).ceil() as usize;
+    // Calculate target numbers for test and valid sets
+    let target_test_count = (total_images as f32 * 0.05).ceil() as usize;
+    let target_valid_count = (total_images as f32 * 0.01).ceil() as usize;
     
-    if test_count == 0 || valid_count == 0 {
-        println!("Not enough images to create test/valid sets (need at least 100 images)");
+    // Calculate how many additional files we need
+    let needed_test_files = target_test_count.saturating_sub(existing_test_files.len());
+    let needed_valid_files = target_valid_count.saturating_sub(existing_valid_files.len());
+    
+    if needed_test_files == 0 && needed_valid_files == 0 {
+        println!("Test and valid sets already have the correct number of images");
+        println!("Total images: {}, Test: {}, Valid: {}", total_images, existing_test_files.len(), existing_valid_files.len());
         return Ok(());
     }
     
-    // Randomly shuffle the entries
+    // Randomly shuffle the train files
     let mut rng = rand::rng();
-    entries.shuffle(&mut rng);
+    train_files.shuffle(&mut rng);
     
-    // Take the first 5% for test set and next 1% for valid set
-    let test_images = &entries[..test_count];
-    let valid_images = &entries[..valid_count];
-    
-    // Copy images to test directory
-    for src_path in test_images {
-        let file_name = src_path.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "Failed to get filename")
-        })?;
-        let dest_path = test_dir.join(file_name);
-        
-        fs::copy(src_path, &dest_path)?;
+    // Copy needed files to test set
+    if needed_test_files > 0 {
+        let test_images = &train_files[..needed_test_files];
+        for src_path in test_images {
+            let file_name = src_path.file_name().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "Failed to get filename")
+            })?;
+            let dest_path = test_dir.join(file_name);
+            fs::copy(src_path, &dest_path)?;
+        }
     }
 
-    // Copy images to valid directory
-    for src_path in valid_images {
-        let file_name = src_path.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "Failed to get filename")
-        })?;
-        let dest_path = valid_dir.join(file_name);
-        
-        fs::copy(src_path, &dest_path)?;
+    // Copy needed files to valid set
+    if needed_valid_files > 0 {
+        let start = needed_test_files;
+        let end = start + needed_valid_files;
+        let valid_images = &train_files[start..end.min(train_files.len())];
+        for src_path in valid_images {
+            let file_name = src_path.file_name().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "Failed to get filename")
+            })?;
+            let dest_path = valid_dir.join(file_name);
+            fs::copy(src_path, &dest_path)?;
+        }
     }
     
-    println!("Dataset split complete: {} images in test set, {} images in valid set", test_count, valid_count);
+    println!("Dataset split updated:");
+    println!("Total images: {}", total_images);
+    println!("Test set: {} existing + {} new = {} total (target: {})", 
+        existing_test_files.len(), needed_test_files, existing_test_files.len() + needed_test_files, target_test_count);
+    println!("Valid set: {} existing + {} new = {} total (target: {})", 
+        existing_valid_files.len(), needed_valid_files, existing_valid_files.len() + needed_valid_files, target_valid_count);
+    
     Ok(())
 }
