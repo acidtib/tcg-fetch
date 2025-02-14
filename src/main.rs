@@ -1,6 +1,7 @@
 use clap::Parser;
 use clap::ValueEnum;
 use std::path::Path;
+use std::thread;
 mod utils;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -30,6 +31,10 @@ struct Args {
     /// Amount of cards to fetch
     #[arg(short, long, default_value = "all")]
     amount: Option<String>,
+
+    /// Number of threads to use for downloading images (defaults to number of CPU cores)
+    #[arg(short = 't', long, default_value_t = thread::available_parallelism().map_or(1, |p| p.get()))]
+    threads: usize,
 }
 
 #[tokio::main]
@@ -46,29 +51,19 @@ async fn main() -> std::io::Result<()> {
     match utils::fetch_bulk_data(&args.path, &args.data).await {
         Ok(files) => {
             println!("\nDownloaded JSON files:");
-            for file in files {
+            for file in &files {
                 println!("  - {}", file);
+            }
+
+            // Download card images
+            for file in files {
+                if let Err(e) = utils::download_card_images(&file, &args.path, args.amount.as_deref(), args.threads).await {
+                    eprintln!("Error downloading images: {}", e);
+                    return Err(e);
+                }
             }
         }
         Err(e) => eprintln!("Error fetching bulk data: {}", e),
-    }
-
-    // Download images in the json file
-    let data_type = utils::get_scryfall_type(&args.data);
-    let json_path = Path::new(&args.path).join(format!("{}.json", data_type));
-    
-    if json_path.exists() {
-        println!("\nDownloading card images...");
-        match utils::download_card_images(
-            json_path.to_str().unwrap(), 
-            &args.path,
-            args.amount.as_deref()
-        ).await {
-            Ok(_) => println!("Image download completed successfully!"),
-            Err(e) => eprintln!("Error downloading images: {}", e),
-        }
-    } else {
-        eprintln!("JSON file not found: {}", json_path.display());
     }
 
     Ok(())

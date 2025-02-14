@@ -3,7 +3,7 @@ use std::path::Path;
 use std::io::{self, Write};
 use serde::Deserialize;
 use tokio;
-use futures::future::join_all;
+use futures::stream::StreamExt;
 use reqwest;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -160,7 +160,7 @@ pub async fn fetch_bulk_data(directory: &str, data_type: &super::DataType) -> io
     Ok(downloaded_files)
 }
 
-pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Option<&str>) -> io::Result<()> {
+pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Option<&str>, thread_count: usize) -> io::Result<()> {
     let client = reqwest::Client::new();
     let images_dir = Path::new(output_dir).join("data/train");
     fs::create_dir_all(&images_dir)?;
@@ -181,7 +181,7 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
     }
     
     let total_cards = cards.len();
-    println!("Found {} cards in JSON file, downloading {} cards", total_cards, total_cards);
+    println!("Found {} cards in JSON file, downloading {} cards using {} threads", total_cards, total_cards, thread_count);
 
     let pb = ProgressBar::new(total_cards as u64);
     pb.set_style(ProgressStyle::default_bar()
@@ -210,40 +210,38 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
                     .send()
                     .await {
                     Ok(response) => {
-                        if let Ok(bytes) = response.bytes().await {
-                            if let Ok(_) = tokio::fs::write(&image_path, &bytes).await {
+                        match response.bytes().await {
+                            Ok(bytes) => {
+                                let mut file = fs::File::create(&image_path)?;
+                                file.write_all(&bytes)?;
                                 pb.inc(1);
                                 Ok(())
-                            } else {
-                                Err(format!("Failed to write image: {}", card.id))
-                            }
-                        } else {
-                            Err(format!("Failed to get bytes for image: {}", card.id))
+                            },
+                            Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string()))
                         }
                     },
-                    Err(e) => {
-                        Err(format!("Failed to download image {}: {}", card.id, e))
-                    }
+                    Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string()))
                 }
             })
         })
         .collect::<Vec<_>>();
 
-    let results = join_all(downloads).await;
+    // Process downloads in parallel with the specified number of threads
+    let stream = futures::stream::iter(downloads)
+        .buffer_unordered(thread_count)
+        .collect::<Vec<_>>();
+
+    let results = stream.await;
     pb.finish_with_message("Download completed");
 
-    let (successes, failures): (Vec<_>, Vec<_>) = results.into_iter()
-        .partition(|r| r.is_ok());
+    // Count successes and failures
+    let failures: Vec<_> = results.into_iter()
+        .filter(|r| r.is_err())
+        .collect();
 
-    println!("\nSuccessfully downloaded {} card images", successes.len());
-    
     if !failures.is_empty() {
-        println!("\nFailed to download {} images:", failures.len());
-        for error in failures {
-            if let Err(e) = error {
-                eprintln!("  - {}", e);
-            }
-        }
+        println!("\nFailed to download {} images", failures.len());
+        return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to download {} images", failures.len())));
     }
 
     Ok(())
