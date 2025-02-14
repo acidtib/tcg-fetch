@@ -364,7 +364,7 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     let total_images = train_files.len() + existing_test_files.len() + existing_valid_files.len();
     
     // Calculate target numbers for test and valid sets
-    let target_test_count = (total_images as f32 * 0.05).ceil() as usize;
+    let target_test_count = (total_images as f32 * 0.03).ceil() as usize;
     let target_valid_count = (total_images as f32 * 0.01).ceil() as usize;
     
     // Calculate how many additional files we need
