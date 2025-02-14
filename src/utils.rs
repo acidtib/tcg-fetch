@@ -255,9 +255,12 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
             let client = client.clone();
             let pb = pb_clone.clone();
             
+            {
+            let value = images_dir.clone();
             async move {
                 // Skip if image already exists
-                if image_path.exists() {
+                let image_path_jpg = value.join(format!("{}.jpg", card.id));
+                if image_path_jpg.exists() {
                     pb.inc(1);
                     return Ok(());
                 }
@@ -285,6 +288,7 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
                     },
                     Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string()))
                 }
+            }
             }
         })
         .collect::<Vec<_>>();
