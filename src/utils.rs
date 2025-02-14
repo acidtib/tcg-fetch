@@ -6,6 +6,7 @@ use tokio;
 use futures::stream::StreamExt;
 use reqwest;
 use indicatif::{ProgressBar, ProgressStyle};
+use image::{ImageBuffer, RgbImage};
 
 // Map our data types to Scryfall's types
 pub const BULK_DATA_TYPES: [&str; 4] = ["unique_artwork", "oracle_cards", "default_cards", "all_cards"];
@@ -35,7 +36,7 @@ struct BulkDataResponse {
 
 #[derive(Debug, Deserialize)]
 struct ImageUris {
-    png: String,
+    border_crop: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,6 +154,52 @@ pub async fn fetch_bulk_data(directory: &str, data_type: &super::DataType) -> io
     Ok(downloaded_files)
 }
 
+fn process_image(image_path: &Path) -> io::Result<()> {
+    // Open and decode the image
+    let img = image::open(image_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    
+    // Convert to RGB
+    let img = img.into_rgb8();
+    
+    // Create a new black background image
+    let new_size = (298, 298);
+    let mut new_img: RgbImage = ImageBuffer::new(new_size.0, new_size.1);
+    
+    // Calculate the scaling factor to maintain aspect ratio
+    let scale = f32::min(
+        new_size.0 as f32 / img.width() as f32,
+        new_size.1 as f32 / img.height() as f32
+    );
+    
+    // Calculate new dimensions
+    let new_width = (img.width() as f32 * scale) as u32;
+    let new_height = (img.height() as f32 * scale) as u32;
+    
+    // Resize the image using Lanczos3 filter
+    let resized = image::imageops::resize(
+        &img,
+        new_width,
+        new_height,
+        image::imageops::FilterType::Lanczos3
+    );
+    
+    // Calculate position to paste (center)
+    let x = ((new_size.0 - new_width) / 2) as i64;
+    let y = ((new_size.1 - new_height) / 2) as i64;
+    
+    // Copy the resized image onto the black background
+    image::imageops::replace(&mut new_img, &resized, x, y);
+    
+    // Create the new file path with .jpg extension
+    let new_image_path = image_path.with_extension("jpg");
+    
+    // Save the processed image as JPEG with high quality
+    new_img.save_with_format(&new_image_path, image::ImageFormat::Jpeg)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    
+    Ok(())
+}
+
 pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Option<&str>, thread_count: usize) -> io::Result<()> {
     let client = reqwest::Client::new();
     let images_dir = Path::new(output_dir).join("data/train");
@@ -187,10 +234,16 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
     let downloads = cards.into_iter()
         .filter_map(|card| {
             let image_uris = card.image_uris?;
-            let image_path = images_dir.join(format!("{}.png", card.id));
+            // Get the extension from the URL by removing query parameters and getting the last part
+            let extension = image_uris.border_crop
+                .split('?')
+                .next()
+                .and_then(|url| url.rsplit('.').next())
+                .unwrap_or("jpg");
+            let image_path = images_dir.join(format!("{}.{}", card.id, extension));
             let client = client.clone();
             let pb = pb_clone.clone();
-            
+
             // Skip if image already exists
             if image_path.exists() {
                 pb.inc(1);
@@ -198,7 +251,7 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
             }
 
             Some(async move {
-                match client.get(&image_uris.png)
+                match client.get(&image_uris.border_crop)
                     .header("User-Agent", "OjoFetchMagic/1.0")
                     .send()
                     .await {
@@ -207,6 +260,12 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
                             Ok(bytes) => {
                                 let mut file = fs::File::create(&image_path)?;
                                 file.write_all(&bytes)?;
+                                
+                                // Process the downloaded image
+                                if let Err(e) = process_image(&image_path) {
+                                    eprintln!("Error processing image {}: {}", image_path.display(), e);
+                                }
+                                
                                 pb.inc(1);
                                 Ok(())
                             },
