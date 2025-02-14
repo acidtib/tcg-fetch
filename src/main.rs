@@ -38,11 +38,15 @@ fn main() -> std::io::Result<()> {
     // Ensure the output directory exists
     utils::ensure_directories(&args.path)?;
 
-    // Check which JSON files exist
-    let existing_files = utils::check_json_files(&args.path);
-    println!("Found existing JSON files:");
-    for file in &existing_files {
-        println!("  - {}", file);
+    // Fetch and download JSON file for the selected data type
+    match utils::fetch_bulk_data(&args.path, &args.data) {
+        Ok(files) => {
+            println!("\nDownloaded JSON files:");
+            for file in files {
+                println!("  - {}", file);
+            }
+        }
+        Err(e) => eprintln!("Error fetching bulk data: {}", e),
     }
 
     Ok(())
