@@ -26,6 +26,10 @@ struct Args {
     /// Type of card data to fetch (unique, oracle, default, all)
     #[arg(short, long, value_enum, default_value_t = DataType::Default)]
     data: DataType,
+
+    /// Amount of cards to fetch
+    #[arg(short, long, default_value = "all")]
+    amount: Option<String>,
 }
 
 fn main() -> std::io::Result<()> {
@@ -54,7 +58,11 @@ fn main() -> std::io::Result<()> {
     
     if json_path.exists() {
         println!("\nDownloading card images...");
-        match utils::download_card_images(json_path.to_str().unwrap(), &args.path) {
+        match utils::download_card_images(
+            json_path.to_str().unwrap(), 
+            &args.path,
+            args.amount.as_deref()
+        ) {
             Ok(_) => println!("Image download completed successfully!"),
             Err(e) => eprintln!("Error downloading images: {}", e),
         }

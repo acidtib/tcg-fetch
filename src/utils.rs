@@ -171,17 +171,28 @@ pub fn fetch_bulk_data(directory: &str, data_type: &super::DataType) -> io::Resu
     Ok(downloaded_files)
 }
 
-pub fn download_card_images(json_path: &str, output_dir: &str) -> io::Result<()> {
+pub fn download_card_images(json_path: &str, output_dir: &str, amount: Option<&str>) -> io::Result<()> {
     let client = Client::new();
     let images_dir = Path::new(output_dir).join("data/train");
     fs::create_dir_all(&images_dir)?;
 
     // Read and parse the JSON file
     let json_content = fs::read_to_string(json_path)?;
-    let cards: Vec<Card> = serde_json::from_str(&json_content)?;
+    let mut cards: Vec<Card> = serde_json::from_str(&json_content)?;
+    
+    // Handle amount parameter
+    if let Some(amt) = amount {
+        if amt != "all" {
+            if let Ok(limit) = amt.parse::<usize>() {
+                cards.truncate(limit);
+            } else {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid amount value"));
+            }
+        }
+    }
+    
     let total_cards = cards.len();
-
-    println!("Found {} cards in JSON file", total_cards);
+    println!("Found {} cards in JSON file, downloading {} cards", total_cards, total_cards);
     let mut downloaded = 0;
 
     for card in cards {
