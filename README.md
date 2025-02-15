@@ -1,15 +1,21 @@
 # Ojo Fetch Magic
 
-A Rust CLI tool to fetch Magic: The Gathering card data from the Scryfall API. This tool helps organize card data into train, test, and validation sets.
+A Rust CLI tool to fetch Magic: The Gathering card data from the Scryfall API. This tool helps organize card data into train, test, and validation sets, with built-in image augmentation capabilities.
 
 ## Features
 
 - Fetches card data from Scryfall API
 - Downloads different types of card data (unique artwork, oracle cards, default cards, or all cards)
+- Automatic image augmentation for each downloaded card:
+  - Random rotation (-10° to 10°)
+  - Slight zoom variations (95% to 105%)
+  - Small position shifts
+  - Generates 5 augmented versions per card
 - Organizes data into train/test/validation sets
 - Command-line interface with customizable output path
 - Checks for existing files to avoid unnecessary downloads
-- Progress indicator for large file downloads
+- Progress indicator for downloads and augmentation
+- Multi-threaded image downloading
 
 ## Installation
 
@@ -38,16 +44,22 @@ cargo run -- --data default   # Download default cards data
 cargo run -- --data all       # Download all cards data
 ```
 
+Limit the number of cards to download and set thread count:
+
+```bash
+cargo run -- --amount 100 --threads 6    # Download 100 cards using 6 threads
+```
+
 Specify a custom output directory:
 
 ```bash
 cargo run -- --path custom-data-dir
 ```
 
-Combine both options:
+Combine multiple options:
 
 ```bash
-cargo run -- --data oracle --path custom-data-dir
+cargo run -- --data oracle --path custom-data-dir --amount 50 --threads 4
 ```
 
 This will create a directory with the following structure:
@@ -55,6 +67,13 @@ This will create a directory with the following structure:
 <output-dir>/
 ├── data/
 │   ├── train/
+│   │   └── <card-id>/
+│   │       ├── 0000.jpg    # Original image
+│   │       ├── 0001.jpg    # Augmented version 1
+│   │       ├── 0002.jpg    # Augmented version 2
+│   │       ├── 0003.jpg    # Augmented version 3
+│   │       ├── 0004.jpg    # Augmented version 4
+│   │       └── 0005.jpg    # Augmented version 5
 │   ├── test/
 │   └── valid/
 └── <data-type>.json
@@ -72,3 +91,7 @@ cargo run -- --help
 - reqwest: HTTP client for API requests
 - serde: JSON serialization/deserialization
 - tokio: Async runtime
+- image: Image processing
+- imageproc: Image transformations
+- rand: Random number generation for augmentation
+- indicatif: Progress bars
