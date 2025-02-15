@@ -251,19 +251,25 @@ pub async fn download_card_images(json_path: &str, output_dir: &str, amount: Opt
                 .next()
                 .and_then(|url| url.rsplit('.').next())
                 .unwrap_or("jpg");
-            let image_path = images_dir.join(format!("{}.{}", card.id, extension));
+            
+            // Create a subdirectory for each card
+            let card_dir = images_dir.join(&card.id);
+            let image_path = card_dir.join(format!("0000.{}", extension));
             let client = client.clone();
             let pb = pb_clone.clone();
             
             {
-            let value = images_dir.clone();
+            let value = card_dir.clone();
             async move {
                 // Skip if image already exists
-                let image_path_jpg = value.join(format!("{}.jpg", card.id));
+                let image_path_jpg = value.join("0000.jpg");
                 if image_path_jpg.exists() {
                     pb.inc(1);
                     return Ok(());
                 }
+
+                // Create the card's directory if it doesn't exist
+                fs::create_dir_all(&value)?;
 
                 match client.get(&image_uris.png)
                     .header("User-Agent", "OjoFetchMagic/1.0")
@@ -328,8 +334,14 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension()?.to_str()? == "jpg" {
-                Some(path)
+            if path.is_dir() {
+                // Look for 0000.jpg in each card directory
+                let jpg_path = path.join("0000.jpg");
+                if jpg_path.exists() {
+                    Some(jpg_path)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -341,8 +353,13 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension()?.to_str()? == "jpg" {
-                Some(path)
+            if path.is_dir() {
+                let jpg_path = path.join("0000.jpg");
+                if jpg_path.exists() {
+                    Some(jpg_path)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -353,8 +370,13 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension()?.to_str()? == "jpg" {
-                Some(path)
+            if path.is_dir() {
+                let jpg_path = path.join("0000.jpg");
+                if jpg_path.exists() {
+                    Some(jpg_path)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -385,10 +407,10 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     if needed_test_files > 0 {
         let test_images = &train_files[..needed_test_files];
         for src_path in test_images {
-            let file_name = src_path.file_name().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::Other, "Failed to get filename")
-            })?;
-            let dest_path = test_dir.join(file_name);
+            let card_id = src_path.parent().unwrap().file_name().unwrap();
+            let dest_dir = test_dir.join(card_id);
+            fs::create_dir_all(&dest_dir)?;
+            let dest_path = dest_dir.join("0000.jpg");
             fs::copy(src_path, &dest_path)?;
         }
     }
@@ -399,10 +421,10 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         let end = start + needed_valid_files;
         let valid_images = &train_files[start..end.min(train_files.len())];
         for src_path in valid_images {
-            let file_name = src_path.file_name().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::Other, "Failed to get filename")
-            })?;
-            let dest_path = valid_dir.join(file_name);
+            let card_id = src_path.parent().unwrap().file_name().unwrap();
+            let dest_dir = valid_dir.join(card_id);
+            fs::create_dir_all(&dest_dir)?;
+            let dest_path = dest_dir.join("0000.jpg");
             fs::copy(src_path, &dest_path)?;
         }
     }
