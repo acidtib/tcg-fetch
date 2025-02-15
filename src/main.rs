@@ -32,7 +32,7 @@ struct Args {
     amount: Option<String>,
 
     /// Number of threads to use for downloading images (defaults to number of CPU cores)
-    #[arg(short = 't', long, default_value_t = thread::available_parallelism().map_or(1, |p| p.get()))]
+    #[arg(short, long, default_value_t = thread::available_parallelism().map_or(1, |p| p.get()))]
     threads: usize,
 }
 
