@@ -65,39 +65,39 @@ async fn main() -> std::io::Result<()> {
                 }
             }
 
-            // After downloading all images, generate augmented versions
-            println!("\nGenerating augmented images...");
-            let train_dir = Path::new(&args.path).join("data/train");
+            // // After downloading all images, generate augmented versions
+            // println!("\nGenerating augmented images...");
+            // let train_dir = Path::new(&args.path).join("data/train");
             
-            // Get all card directories
-            if let Ok(entries) = fs::read_dir(&train_dir) {
-                let total_dirs = entries.count();
-                let pb = ProgressBar::new(total_dirs as u64);
-                pb.set_style(ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-                    .unwrap()
-                    .progress_chars("#>-"));
+            // // Get all card directories
+            // if let Ok(entries) = fs::read_dir(&train_dir) {
+            //     let total_dirs = entries.count();
+            //     let pb = ProgressBar::new(total_dirs as u64);
+            //     pb.set_style(ProgressStyle::default_bar()
+            //         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            //         .unwrap()
+            //         .progress_chars("#>-"));
 
-                // Process each card directory
-                if let Ok(entries) = fs::read_dir(&train_dir) {
-                    for entry in entries {
-                        if let Ok(entry) = entry {
-                            let path = entry.path();
-                            if path.is_dir() {
-                                // Find the original image (0000.jpg)
-                                let original_img = path.join("0000.jpg");
-                                if original_img.exists() {
-                                    if let Err(e) = augment::generate_augmented_images(&original_img, &path, Some(5)) {
-                                        eprintln!("Error generating augmented images for {}: {}", path.display(), e);
-                                    }
-                                }
-                            }
-                            pb.inc(1);
-                        }
-                    }
-                }
-                pb.finish_with_message("Augmentation completed");
-            }
+            //     // Process each card directory
+            //     if let Ok(entries) = fs::read_dir(&train_dir) {
+            //         for entry in entries {
+            //             if let Ok(entry) = entry {
+            //                 let path = entry.path();
+            //                 if path.is_dir() {
+            //                     // Find the original image (0000.jpg)
+            //                     let original_img = path.join("0000.jpg");
+            //                     if original_img.exists() {
+            //                         if let Err(e) = augment::generate_augmented_images(&original_img, &path, Some(5)) {
+            //                             eprintln!("Error generating augmented images for {}: {}", path.display(), e);
+            //                         }
+            //                     }
+            //                 }
+            //                 pb.inc(1);
+            //             }
+            //         }
+            //     }
+            //     pb.finish_with_message("Augmentation completed");
+            // }
 
             // Split dataset into test and validation sets
             println!("\nSplitting dataset...");
