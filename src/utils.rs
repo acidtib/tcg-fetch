@@ -190,7 +190,7 @@ fn process_image(image_path: &Path) -> io::Result<()> {
     let img = img.into_rgb8();
 
     // Create a new black background image
-    let new_size = (228, 228);
+    let new_size = (298, 298);
     let mut new_img: RgbImage = ImageBuffer::new(new_size.0, new_size.1);
 
     // Calculate the scaling factor to maintain aspect ratio
