@@ -173,8 +173,25 @@ for split_name, split_dataset in dataset.items():
 
 # Convert each split to sharded parquet files
 for split_name, split_dataset in embedded_dataset.items():
-    num_shards = max(1, split_dataset.num_rows // 1000)  # Aim for ~1000 rows per shard
+    # Calculate number of shards based on target shard size of 420MB
+    target_shard_size = 420 * 1024 * 1024  # 420MB in bytes
+    
+    # Get a sample of images to estimate average size
+    sample_size = min(100, len(split_dataset))
+    sample_total = 0
+    for example in split_dataset.select(range(sample_size)):
+        img_byte_arr = io.BytesIO()
+        example["image"].save(img_byte_arr, format=example["image"].format or 'JPEG')
+        sample_total += len(img_byte_arr.getvalue())
+    avg_image_size = sample_total / sample_size
+    
+    # Estimate total size and calculate number of shards
+    estimated_total_size = avg_image_size * len(split_dataset)
+    num_shards = max(1, int(estimated_total_size // target_shard_size + (1 if estimated_total_size % target_shard_size else 0)))
+    
     print(f"\nSaving {split_name} split into {num_shards} shards...")
+    print(f"Estimated total split size: {estimated_total_size / (1024 * 1024):.2f}MB")
+    print(f"Average image size: {avg_image_size / 1024:.2f}KB")
     
     for index in range(num_shards):
         shard = split_dataset.shard(index=index, num_shards=num_shards, contiguous=True)
