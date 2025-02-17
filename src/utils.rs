@@ -61,7 +61,7 @@ pub fn ensure_directories(base_path: &str) -> io::Result<()> {
     }
 
     // Create required subdirectories
-    let subdirs = ["data", "data/train", "data/test", "data/valid"];
+    let subdirs = ["data", "data/train", "data/test", "data/validation"];
     for subdir in subdirs {
         let dir_path = base_path.join(subdir);
         if !dir_path.exists() {
@@ -190,7 +190,7 @@ fn process_image(image_path: &Path) -> io::Result<()> {
     let img = img.into_rgb8();
 
     // Create a new black background image
-    let new_size = (224, 224);
+    let new_size = (228, 228);
     let mut new_img: RgbImage = ImageBuffer::new(new_size.0, new_size.1);
 
     // Calculate the scaling factor to maintain aspect ratio
@@ -376,7 +376,7 @@ pub async fn download_card_images(
 pub fn split_dataset(base_path: &str) -> io::Result<()> {
     let train_dir = Path::new(base_path).join("data/train");
     let test_dir = Path::new(base_path).join("data/test");
-    let valid_dir = Path::new(base_path).join("data/valid");
+    let valid_dir = Path::new(base_path).join("data/validation");
 
     // Create directories if they don't exist
     fs::create_dir_all(&test_dir)?;
@@ -401,7 +401,7 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         })
         .collect();
 
-    // Get existing test and valid files
+    // Get existing test and validation files
     let existing_test_files: Vec<_> = fs::read_dir(&test_dir)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
@@ -438,7 +438,7 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
 
     let total_images = train_files.len() + existing_test_files.len() + existing_valid_files.len();
 
-    // Calculate target numbers for test and valid sets
+    // Calculate target numbers for test and validation sets
     let target_test_count = (total_images as f32 * 0.03).ceil() as usize;
     let target_valid_count = (total_images as f32 * 0.01).ceil() as usize;
 
@@ -447,9 +447,9 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     let needed_valid_files = target_valid_count.saturating_sub(existing_valid_files.len());
 
     if needed_test_files == 0 && needed_valid_files == 0 {
-        println!("Test and valid sets already have the correct number of images");
+        println!("Test and validation sets already have the correct number of images");
         println!(
-            "Total images: {}, Test: {}, Valid: {}",
+            "Total images: {}, Test: {}, Validation: {}",
             total_images,
             existing_test_files.len(),
             existing_valid_files.len()
@@ -473,7 +473,7 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         }
     }
 
-    // Copy needed files to valid set
+    // Copy needed files to validation set
     if needed_valid_files > 0 {
         let start = needed_test_files;
         let end = start + needed_valid_files;
@@ -497,7 +497,7 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         target_test_count
     );
     println!(
-        "Valid set: {} existing + {} new = {} total (target: {})",
+        "Validation set: {} existing + {} new = {} total (target: {})",
         existing_valid_files.len(),
         needed_valid_files,
         existing_valid_files.len() + needed_valid_files,
