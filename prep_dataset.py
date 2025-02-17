@@ -4,6 +4,9 @@ from PIL import Image as PILImage
 import io
 import json
 
+data_dir = r"E:\magic-dataset\data"
+output_dir = r"E:\magic-dataset\dataset"
+
 def get_directory_size(path):
     """Get total size of directory, return 0 if directory doesn't exist"""
     if not os.path.exists(path):
@@ -46,15 +49,14 @@ def embed_images(example):
     }
 
 # Get unique labels first
-data_dir = r"E:\magic-dataset\data"
 train_dir = os.path.join(data_dir, "train")
 val_dir = os.path.join(data_dir, "validation")
 test_dir = os.path.join(data_dir, "test")
 
 # Create output directory if it doesn't exist
-git_dir = r"E:\turtle_code\tcg-magic"
-output_dir = os.path.join(git_dir, "data")
-os.makedirs(output_dir, exist_ok=True)
+
+output_data_dir = os.path.join(output_dir, "data")
+os.makedirs(output_data_dir, exist_ok=True)
 
 # Ensure train directory exists
 if not os.path.exists(train_dir):
@@ -91,14 +93,13 @@ dataset_info_content += "  features:\n"
 dataset_info_content += "  - name: image\n    dtype: image\n"
 dataset_info_content += "  - name: label\n    dtype:\n        class_label:\n          names:\n"
 
-# Add first 50 label mappings as examples
+# Add first 4999 label mappings as examples
 for i, (idx, label) in enumerate(id_to_label.items()):
-    if i < 50:  # Only show first 50 mappings
+    if i < 4999:
         dataset_info_content += f"            '{idx}': {label}\n"
     else:
         break
 
-dataset_info_content += "            # ... additional labels truncated, see label_mapping.json for complete list\n"
 dataset_info_content += "  splits:\n"
 
 if train_examples > 0:
@@ -112,11 +113,11 @@ dataset_info_content += f"  download_size: {total_size}\n"
 dataset_info_content += f"  dataset_size: {total_size}\n"
 
 # Save label mappings to a separate file
-with open(os.path.join(git_dir, 'label_mapping.json'), 'w') as f:
+with open(os.path.join(output_dir, 'label_mapping.json'), 'w') as f:
     json.dump(id_to_label, f, indent=2)
 
 # Read existing README content
-readme_path = os.path.join(git_dir, "README.md")
+readme_path = os.path.join(output_dir, "README.md")
 if os.path.exists(readme_path):
     with open(readme_path, "r") as f:
         existing_content = f.read()
@@ -142,7 +143,7 @@ else:
     # If README doesn't exist, create it with just the dataset_info section
     with open(readme_path, "w") as f:
         f.write("---\n" + dataset_info_content + "\nconfigs:")
-
+        
 # Load the dataset with proper features
 features = Features({
     "image": Image(),
@@ -196,7 +197,7 @@ for split_name, split_dataset in embedded_dataset.items():
     for index in range(num_shards):
         shard = split_dataset.shard(index=index, num_shards=num_shards, contiguous=True)
         # Use Hugging Face naming convention: split-XXXXX-of-YYYYY.parquet
-        output_path = os.path.join(output_dir, f"{split_name}-{index:05d}-of-{num_shards:05d}.parquet")
+        output_path = os.path.join(output_data_dir, f"{split_name}-{index:05d}-of-{num_shards:05d}.parquet")
         shard.to_parquet(output_path)
         print(f"Saved shard {index + 1}/{num_shards} to {output_path}")
 
