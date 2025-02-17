@@ -1,8 +1,10 @@
-from datasets import load_dataset, Features, ClassLabel, Value, Image
 import os
-from PIL import Image as PILImage
 import io
 import json
+from datasets import load_dataset, Features, ClassLabel, Value, Image
+from huggingface_hub import HfApi
+from PIL import Image as PILImage
+api = HfApi()
 
 data_dir = r"E:\magic-dataset\data"
 output_dir = r"E:\magic-dataset\dataset"
@@ -201,4 +203,12 @@ for split_name, split_dataset in embedded_dataset.items():
         shard.to_parquet(output_path)
         print(f"Saved shard {index + 1}/{num_shards} to {output_path}")
 
-print("\nDone! The parquet files now contain embedded images and numeric labels that can be uploaded to Hugging Face.")
+print("\nDone! Dataset is ready to be uploaded to Hugging Face")
+
+api.upload_large_folder(
+    repo_id="acidtib/tcg-magic-cards",
+    repo_type="dataset",
+    folder_path=output_dir,
+)
+
+print("\nDone! Dataset is uploaded to Hugging Face")
