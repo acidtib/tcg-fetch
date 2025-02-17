@@ -87,7 +87,7 @@ async fn main() -> std::io::Result<()> {
                                 // Find the original image (0000.jpg)
                                 let original_img = path.join("0000.jpg");
                                 if original_img.exists() {
-                                    if let Err(e) = augment::generate_augmented_images(&original_img, &path, Some(5)) {
+                                    if let Err(e) = augment::generate_augmented_images(&original_img, &path, Some(6)) {
                                         eprintln!("Error generating augmented images for {}: {}", path.display(), e);
                                     }
                                 }
@@ -99,7 +99,7 @@ async fn main() -> std::io::Result<()> {
                 pb.finish_with_message("Augmentation completed");
             }
 
-            // Split dataset into test and valid sets
+            // Split dataset into test and validation sets
             println!("\nSplitting dataset...");
             if let Err(e) = utils::split_dataset(&args.path) {
                 eprintln!("Error splitting dataset: {}", e);
