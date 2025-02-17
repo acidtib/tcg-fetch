@@ -75,7 +75,7 @@ This will create a directory with the following structure:
 │   │       ├── 0004.jpg    # Augmented version 4
 │   │       └── 0005.jpg    # Augmented version 5
 │   ├── test/
-│   └── valid/
+│   └── validation/
 └── <data-type>.json
 ```
 
