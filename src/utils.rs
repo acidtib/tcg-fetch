@@ -182,7 +182,7 @@ pub async fn fetch_bulk_data(
     Ok(downloaded_files)
 }
 
-fn process_image(image_path: &Path) -> io::Result<()> {
+fn process_image(image_path: &Path, width: u32, height: u32) -> io::Result<()> {
     // Open and decode the image
     let img = image::open(image_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
@@ -190,7 +190,7 @@ fn process_image(image_path: &Path) -> io::Result<()> {
     let img = img.into_rgb8();
 
     // Create a new black background image
-    let new_size = (298, 298);
+    let new_size = (width, height);
     let mut new_img: RgbImage = ImageBuffer::new(new_size.0, new_size.1);
 
     // Calculate the scaling factor to maintain aspect ratio
@@ -237,6 +237,8 @@ pub async fn download_card_images(
     output_dir: &str,
     amount: Option<&str>,
     thread_count: usize,
+    width: u32,
+    height: u32,
 ) -> io::Result<()> {
     let client = reqwest::Client::new();
     let images_dir = Path::new(output_dir).join("data/train");
@@ -330,7 +332,7 @@ pub async fn download_card_images(
                                     file.write_all(&bytes)?;
 
                                     // Process the downloaded image
-                                    if let Err(e) = process_image(&image_path) {
+                                    if let Err(e) = process_image(&image_path, width, height) {
                                         eprintln!(
                                             "Error processing image {}: {}",
                                             image_path.display(),
