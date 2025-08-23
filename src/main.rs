@@ -139,6 +139,11 @@ async fn main() -> std::io::Result<()> {
             if let Err(e) = utils::split_dataset(&args.path) {
                 eprintln!("Error splitting dataset: {}", e);
             }
+
+            // Count and display the number of directories in train folder
+            if let Err(e) = utils::count_train_directories(&args.path) {
+                eprintln!("Error counting train directories: {}", e);
+            }
         }
         Err(e) => {
             eprintln!("Error fetching bulk data: {}", e);

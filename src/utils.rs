@@ -508,3 +508,25 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
 
     Ok(())
 }
+
+pub fn count_train_directories(base_path: &str) -> io::Result<usize> {
+    let train_dir = Path::new(base_path).join("data/train");
+
+    if !train_dir.exists() {
+        return Ok(0);
+    }
+
+    let count = fs::read_dir(&train_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if entry.path().is_dir() {
+                Some(())
+            } else {
+                None
+            }
+        })
+        .count();
+
+    println!("\nTrain directory contains {} card directories", count);
+    Ok(count)
+}
