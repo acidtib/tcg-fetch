@@ -121,8 +121,8 @@ Options:
   -t, --threads <THREADS>        Number of threads to use for downloading images [default: CPU cores]
       --augmented                Generate augmented images for training data
       --augment-count <COUNT>    Number of augmented images to generate per original image [default: 5]
-      --width <WIDTH>            Width for processed images [default: 298]
-      --height <HEIGHT>          Height for processed images [default: 298]
+      --width <WIDTH>            Width for processed images [default: 500]
+      --height <HEIGHT>          Height for processed images [default: 500]
   -h, --help                     Print help
   -V, --version                  Print version
 ```

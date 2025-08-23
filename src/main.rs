@@ -48,11 +48,11 @@ struct Args {
     augment_count: u32,
 
     /// Width for processed images
-    #[arg(long, default_value_t = 298)]
+    #[arg(long, default_value_t = 500)]
     width: u32,
 
     /// Height for processed images
-    #[arg(long, default_value_t = 298)]
+    #[arg(long, default_value_t = 500)]
     height: u32,
 }
 
