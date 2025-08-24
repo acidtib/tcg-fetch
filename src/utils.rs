@@ -1,5 +1,5 @@
 use futures::stream::StreamExt;
-use image::{GenericImageView, ImageBuffer, RgbImage};
+use image::GenericImageView;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::seq::SliceRandom;
 use reqwest;
