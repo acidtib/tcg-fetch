@@ -6,7 +6,7 @@ A Rust CLI tool to fetch Magic: The Gathering card data from the Scryfall API. T
 
 - Fetches card data from Scryfall API
 - Downloads different types of card data (unique artwork, oracle cards, default cards, or all cards)
-- Customizable image processing with configurable width and height
+- Direct image resizing to specified dimensions (default: 384×512 pixels)
 - Optional automatic image augmentation for training data:
   - First augmented image is upside-down (180° rotation)
   - Random rotation (-10° to 10°) for other augmented versions
@@ -52,10 +52,10 @@ cargo run -- --data all       # Download all cards data
 
 ### Image Processing Options
 
-Configure image dimensions and processing:
+Configure target image dimensions (images will be resized to fit exactly):
 
 ```bash
-cargo run -- --width 512 --height 512    # Set custom image dimensions
+cargo run -- --width 512 --height 512    # Resize all images to 512×512 pixels
 ```
 
 ### Augmentation Controls
@@ -121,8 +121,8 @@ Options:
   -t, --threads <THREADS>        Number of threads to use for downloading images [default: CPU cores]
       --augmented                Generate augmented images for training data
       --augment-count <COUNT>    Number of augmented images to generate per original image [default: 5]
-      --width <WIDTH>            Width for processed images [default: 500]
-      --height <HEIGHT>          Height for processed images [default: 500]
+      --width <WIDTH>            Target width for resized images [default: 384]
+      --height <HEIGHT>          Target height for resized images [default: 512]
   -h, --help                     Print help
   -V, --version                  Print version
 ```
