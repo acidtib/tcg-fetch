@@ -353,40 +353,15 @@ fn process_image(image_path: &Path, width: u32, height: u32) -> io::Result<()> {
     // Convert to RGB
     let img = img.into_rgb8();
 
-    // Create a new black background image
-    let new_size = (width, height);
-    let mut new_img: RgbImage = ImageBuffer::new(new_size.0, new_size.1);
-
-    // Calculate the scaling factor to maintain aspect ratio
-    let scale = f32::min(
-        new_size.0 as f32 / img.width() as f32,
-        new_size.1 as f32 / img.height() as f32,
-    );
-
-    // Calculate new dimensions
-    let new_width = (img.width() as f32 * scale) as u32;
-    let new_height = (img.height() as f32 * scale) as u32;
-
-    // Resize the image using Lanczos3 filter
-    let resized = image::imageops::resize(
-        &img,
-        new_width,
-        new_height,
-        image::imageops::FilterType::Lanczos3,
-    );
-
-    // Calculate position to paste (center)
-    let x = ((new_size.0 - new_width) / 2) as i64;
-    let y = ((new_size.1 - new_height) / 2) as i64;
-
-    // Copy the resized image onto the black background
-    image::imageops::replace(&mut new_img, &resized, x, y);
+    // Resize the image directly to target dimensions using Lanczos3 filter
+    let resized =
+        image::imageops::resize(&img, width, height, image::imageops::FilterType::Lanczos3);
 
     // Create the new file path with .jpg extension
     let new_image_path = image_path.with_extension("jpg");
 
     // Save the processed image as JPEG with high quality
-    new_img
+    resized
         .save_with_format(&new_image_path, image::ImageFormat::Jpeg)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
