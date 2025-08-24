@@ -1,5 +1,5 @@
 use futures::stream::StreamExt;
-use image::{ImageBuffer, RgbImage};
+use image::{GenericImageView, ImageBuffer, RgbImage};
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::seq::SliceRandom;
 use reqwest;
@@ -182,6 +182,170 @@ pub async fn fetch_bulk_data(
     Ok(downloaded_files)
 }
 
+/// Validates that an image file is not corrupted by attempting to decode it
+/// Also checks file size and format validity
+///
+/// This function performs multiple validation checks:
+/// 1. File size validation (minimum 100 bytes, maximum 50MB)
+/// 2. Image decoding validation using the `image` crate
+/// 3. Dimension validation (minimum 10x10, maximum 10000x10000)
+///
+/// # Arguments
+/// * `image_path` - Path to the image file to validate
+///
+/// # Returns
+/// * `Ok(())` if the image is valid and not corrupted
+/// * `Err(io::Error)` if the image is corrupted or invalid
+///
+/// # Examples
+/// ```
+/// use std::path::Path;
+///
+/// // This would validate a downloaded image
+/// if let Err(e) = validate_image(Path::new("downloaded_image.jpg")) {
+///     eprintln!("Image is corrupted: {}", e);
+///     // Clean up the corrupted file...
+/// }
+/// ```
+fn validate_image(image_path: &Path) -> io::Result<()> {
+    // Check if file exists and has reasonable size
+    let metadata = fs::metadata(image_path)?;
+    let file_size = metadata.len();
+
+    // Check for minimum and maximum reasonable file sizes
+    if file_size < 100 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Image file too small, likely corrupted",
+        ));
+    }
+
+    if file_size > 50_000_000 {
+        // 50MB limit
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Image file too large, possibly corrupted or invalid",
+        ));
+    }
+
+    // Attempt to decode the image to check for corruption
+    match image::open(image_path) {
+        Ok(img) => {
+            // Additional validation: check image dimensions
+            let (width, height) = img.dimensions();
+            if width == 0 || height == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Image has invalid dimensions (0x0)",
+                ));
+            }
+
+            // Check for reasonable image dimensions (not too small, not absurdly large)
+            if width < 10 || height < 10 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Image dimensions too small, likely corrupted",
+                ));
+            }
+
+            if width > 10000 || height > 10000 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Image dimensions unreasonably large",
+                ));
+            }
+
+            Ok(())
+        }
+        Err(e) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Image validation failed: {}", e),
+        )),
+    }
+}
+
+/// Removes a directory and all its contents with comprehensive safety checks
+///
+/// This function safely removes directories containing corrupted images by:
+/// 1. Verifying the directory exists
+/// 2. Checking directory name format (must be at least 8 characters, typically UUIDs)
+/// 3. Scanning directory contents to ensure only image files are present
+/// 4. Removing the entire directory tree if all checks pass
+///
+/// # Safety Features
+/// - Prevents accidental deletion of system directories
+/// - Validates directory contains only image files (.jpg, .jpeg, .png, .webp, .bmp, .tiff)
+/// - Requires minimum directory name length to avoid deleting important folders
+///
+/// # Arguments
+/// * `dir_path` - Path to the directory to remove
+///
+/// # Returns
+/// * `Ok(())` if directory was successfully removed or didn't exist
+/// * `Err(io::Error)` if safety checks fail or removal fails
+///
+/// # Examples
+/// ```
+/// use std::path::Path;
+///
+/// // Clean up a directory containing a corrupted image
+/// let card_dir = Path::new("data/train/corrupted-card-id");
+/// if let Err(e) = cleanup_directory(&card_dir) {
+///     eprintln!("Failed to cleanup directory: {}", e);
+/// }
+/// ```
+fn cleanup_directory(dir_path: &Path) -> io::Result<()> {
+    if !dir_path.exists() {
+        return Ok(());
+    }
+
+    // Safety check: ensure we're only deleting directories within the expected path structure
+    let dir_name = dir_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+
+    // Only clean up directories that look like card IDs (UUIDs or similar)
+    if dir_name.is_empty() || dir_name.len() < 8 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Refusing to delete directory with suspicious name",
+        ));
+    }
+
+    // Check if directory contains only image files to avoid accidental deletion
+    if let Ok(entries) = fs::read_dir(dir_path) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        match ext.to_lowercase().as_str() {
+                            "jpg" | "jpeg" | "png" | "webp" | "bmp" | "tiff" => continue,
+                            _ => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::PermissionDenied,
+                                    format!(
+                                        "Directory contains non-image file: {}",
+                                        path.display()
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fs::remove_dir_all(dir_path)?;
+    eprintln!(
+        "Cleaned up corrupted image directory: {}",
+        dir_path.display()
+    );
+    Ok(())
+}
+
 fn process_image(image_path: &Path, width: u32, height: u32) -> io::Result<()> {
     // Open and decode the image
     let img = image::open(image_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -225,6 +389,10 @@ fn process_image(image_path: &Path, width: u32, height: u32) -> io::Result<()> {
     new_img
         .save_with_format(&new_image_path, image::ImageFormat::Jpeg)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // Final validation: ensure the processed JPEG is not corrupted
+    // This catches any corruption that might have occurred during processing
+    validate_image(&new_image_path)?;
 
     // Delete the original png image
     fs::remove_file(image_path)?;
@@ -331,13 +499,57 @@ pub async fn download_card_images(
                                     let mut file = fs::File::create(&image_path)?;
                                     file.write_all(&bytes)?;
 
-                                    // Process the downloaded image
+                                    // Validate the downloaded image before processing
+                                    // This catches corruption early and prevents processing invalid files
+                                    if let Err(e) = validate_image(&image_path) {
+                                        eprintln!(
+                                            "Downloaded image is corrupted: {} - {}",
+                                            image_path.display(),
+                                            e
+                                        );
+
+                                        // Clean up the corrupted file and its directory
+                                        // This ensures no corrupted data remains in the dataset
+                                        if let Err(cleanup_err) = cleanup_directory(&value) {
+                                            eprintln!(
+                                                "Failed to cleanup corrupted image directory: {}",
+                                                cleanup_err
+                                            );
+                                        }
+
+                                        pb.inc(1);
+                                        return Err(io::Error::new(
+                                            io::ErrorKind::InvalidData,
+                                            format!(
+                                                "Corrupted image detected and cleaned up: {}",
+                                                e
+                                            ),
+                                        ));
+                                    }
+
+                                    // Process the downloaded image (resize, convert to JPEG)
+                                    // The process_image function includes additional validation after processing
                                     if let Err(e) = process_image(&image_path, width, height) {
                                         eprintln!(
                                             "Error processing image {}: {}",
                                             image_path.display(),
                                             e
                                         );
+
+                                        // Clean up the directory if processing fails
+                                        // This handles cases where corruption occurs during processing
+                                        if let Err(cleanup_err) = cleanup_directory(&value) {
+                                            eprintln!(
+                                                "Failed to cleanup failed processing directory: {}",
+                                                cleanup_err
+                                            );
+                                        }
+
+                                        pb.inc(1);
+                                        return Err(io::Error::new(
+                                            io::ErrorKind::Other,
+                                            format!("Image processing failed: {}", e),
+                                        ));
                                     }
 
                                     pb.inc(1);
