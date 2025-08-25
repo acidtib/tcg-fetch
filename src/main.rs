@@ -1,10 +1,6 @@
 use clap::Parser;
 use clap::ValueEnum;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::fs;
-use std::path::Path;
 use std::thread;
-mod augment;
 mod utils;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -38,14 +34,6 @@ struct Args {
     /// Number of threads to use for downloading images (defaults to number of CPU cores)
     #[arg(short, long, default_value_t = thread::available_parallelism().map_or(1, |p| p.get()))]
     threads: usize,
-
-    /// Generate augmented images for training data
-    #[arg(long)]
-    augmented: bool,
-
-    /// Number of augmented images to generate per original image
-    #[arg(long, default_value_t = 5)]
-    augment_count: u32,
 
     /// Width for processed images
     #[arg(long, default_value_t = 384)]
@@ -87,50 +75,6 @@ async fn main() -> std::io::Result<()> {
                 .await
                 {
                     eprintln!("Error downloading images: {}", e);
-                }
-            }
-
-            // Generate augmented images if flag is set
-            if args.augmented {
-                println!("\nGenerating augmented images...");
-                let train_dir = Path::new(&args.path).join("data/train");
-
-                // Get all card directories
-                if let Ok(entries) = fs::read_dir(&train_dir) {
-                    let total_dirs = entries.count();
-                    let pb = ProgressBar::new(total_dirs as u64);
-                    pb.set_style(ProgressStyle::default_bar()
-                        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-                        .unwrap()
-                        .progress_chars("#>-"));
-
-                    // Process each card directory
-                    if let Ok(entries) = fs::read_dir(&train_dir) {
-                        for entry in entries {
-                            if let Ok(entry) = entry {
-                                let path = entry.path();
-                                if path.is_dir() {
-                                    // Find the original image (0000.jpg)
-                                    let original_img = path.join("0000.jpg");
-                                    if original_img.exists() {
-                                        if let Err(e) = augment::generate_augmented_images(
-                                            &original_img,
-                                            &path,
-                                            Some(args.augment_count),
-                                        ) {
-                                            eprintln!(
-                                                "Error generating augmented images for {}: {}",
-                                                path.display(),
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                                pb.inc(1);
-                            }
-                        }
-                    }
-                    pb.finish_with_message("Augmentation completed");
                 }
             }
 

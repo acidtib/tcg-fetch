@@ -1,22 +1,16 @@
 # Ojo Fetch Magic
 
-A Rust CLI tool to fetch Magic: The Gathering card data from the Scryfall API. This tool helps organize card data into train, test, and validation sets, with built-in image augmentation capabilities and Hugging Face dataset preparation.
+A Rust CLI tool to fetch Magic: The Gathering card data from the Scryfall API. This tool helps organize card data into train, test, and validation sets for machine learning applications.
 
 ## Features
 
 - Fetches card data from Scryfall API
 - Downloads different types of card data (unique artwork, oracle cards, default cards, or all cards)
 - Direct image resizing to specified dimensions (default: 384×512 pixels)
-- Optional automatic image augmentation for training data:
-  - First augmented image is upside-down (180° rotation)
-  - Random rotation (-10° to 10°) for other augmented versions
-  - Slight zoom variations (95% to 105%)
-  - Small position shifts (-5% to 5%)
-  - Configurable number of augmented versions per card (default: 5)
 - Organizes data into train/test/validation sets with automatic splitting
 - Command-line interface with customizable output path
 - Checks for existing files to avoid unnecessary downloads
-- Progress indicators for downloads and augmentation
+- Progress indicators for downloads
 - Multi-threaded image downloading with configurable thread count
 
 ## Installation
@@ -58,15 +52,6 @@ Configure target image dimensions (images will be resized to fit exactly):
 cargo run -- --width 512 --height 512    # Resize all images to 512×512 pixels
 ```
 
-### Augmentation Controls
-
-Enable image augmentation for training data:
-
-```bash
-cargo run -- --augmented                           # Enable augmentation with default settings
-cargo run -- --augmented --augment-count 10        # Generate 10 augmented images per card
-```
-
 ### Performance Tuning
 
 Control download performance and dataset size:
@@ -88,7 +73,7 @@ cargo run -- --path custom-data-dir
 Combine multiple options for full control:
 
 ```bash
-cargo run -- --data oracle --path custom-data-dir --amount 50 --threads 4 --augmented --augment-count 8 --width 512 --height 512
+cargo run -- --data oracle --path custom-data-dir --amount 50 --threads 4 --width 512 --height 512
 ```
 
 ## Output Structure
@@ -100,12 +85,7 @@ The tool creates a directory with the following structure:
 ├── data/
 │   ├── train/
 │   │   └── <card-id>/
-│   │       ├── 0000.jpg    # Original image
-│   │       ├── 0001.jpg    # Upside-down version
-│   │       ├── 0002.jpg    # Augmented version 2
-│   │       ├── 0003.jpg    # Augmented version 3
-│   │       ├── 0004.jpg    # Augmented version 4
-│   │       └── 0005.jpg    # Augmented version 5
+│   │       └── 0000.jpg    # Original image
 │   ├── test/
 │   └── validation/
 └── <data-type>.json
@@ -119,8 +99,6 @@ Options:
   -d, --data <DATA>              Type of card data to fetch [default: default] [possible values: unique, oracle, default, all]
   -a, --amount <AMOUNT>          Amount of cards to fetch [default: all]
   -t, --threads <THREADS>        Number of threads to use for downloading images [default: CPU cores]
-      --augmented                Generate augmented images for training data
-      --augment-count <COUNT>    Number of augmented images to generate per original image [default: 5]
       --width <WIDTH>            Target width for resized images [default: 384]
       --height <HEIGHT>          Target height for resized images [default: 512]
   -h, --help                     Print help
@@ -135,10 +113,9 @@ Options:
 - serde: JSON serialization/deserialization
 - tokio: Async runtime
 - image: Image processing
-- imageproc: Image transformations
-- rand: Random number generation for augmentation
 - indicatif: Progress bars
 - futures: Async utilities
+- rand: Random number generation for dataset shuffling
 
 ## Project Structure
 
@@ -146,8 +123,7 @@ Options:
 ojo-fetch-magic/
 ├── src/
 │   ├── main.rs           # Main application logic
-│   ├── utils.rs          # Utility functions for API and file operations
-│   └── augment.rs        # Image augmentation functionality
+│   └── utils.rs          # Utility functions for API and file operations
 ├── Cargo.toml           # Rust dependencies
 └── README.md           # This file
 ```
