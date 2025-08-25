@@ -84,10 +84,11 @@ The tool creates a directory with the following structure:
 <output-dir>/
 ├── data/
 │   ├── train/
-│   │   └── <card-id>/
-│   │       └── 0000.jpg    # Original image
+│   │   └── <card-id>.jpg    # Original image
 │   ├── test/
-│   └── validation/
+│   │   └── <card-id>.jpg    # Test image
+│   ├── validation/
+│   │   └── <card-id>.jpg    # Validation image
 └── <data-type>.json
 ```
 

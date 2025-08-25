@@ -264,91 +264,14 @@ fn validate_image(image_path: &Path) -> io::Result<()> {
     }
 }
 
-/// Removes a directory and all its contents with comprehensive safety checks
-///
-/// This function safely removes directories containing corrupted images by:
-/// 1. Verifying the directory exists
-/// 2. Checking directory name format (must be at least 8 characters, typically UUIDs)
-/// 3. Scanning directory contents to ensure only image files are present
-/// 4. Removing the entire directory tree if all checks pass
-///
-/// # Safety Features
-/// - Prevents accidental deletion of system directories
-/// - Validates directory contains only image files (.jpg, .jpeg, .png, .webp, .bmp, .tiff)
-/// - Requires minimum directory name length to avoid deleting important folders
-///
-/// # Arguments
-/// * `dir_path` - Path to the directory to remove
-///
-/// # Returns
-/// * `Ok(())` if directory was successfully removed or didn't exist
-/// * `Err(io::Error)` if safety checks fail or removal fails
-///
-/// # Examples
-/// ```
-/// use std::path::Path;
-///
-/// // Clean up a directory containing a corrupted image
-/// let card_dir = Path::new("data/train/corrupted-card-id");
-/// if let Err(e) = cleanup_directory(&card_dir) {
-///     eprintln!("Failed to cleanup directory: {}", e);
-/// }
-/// ```
-fn cleanup_directory(dir_path: &Path) -> io::Result<()> {
-    if !dir_path.exists() {
-        return Ok(());
-    }
-
-    // Safety check: ensure we're only deleting directories within the expected path structure
-    let dir_name = dir_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-
-    // Only clean up directories that look like card IDs (UUIDs or similar)
-    if dir_name.is_empty() || dir_name.len() < 8 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Refusing to delete directory with suspicious name",
-        ));
-    }
-
-    // Check if directory contains only image files to avoid accidental deletion
-    if let Ok(entries) = fs::read_dir(dir_path) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        match ext.to_lowercase().as_str() {
-                            "jpg" | "jpeg" | "png" | "webp" | "bmp" | "tiff" => continue,
-                            _ => {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::PermissionDenied,
-                                    format!(
-                                        "Directory contains non-image file: {}",
-                                        path.display()
-                                    ),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fs::remove_dir_all(dir_path)?;
-    eprintln!(
-        "Cleaned up corrupted image directory: {}",
-        dir_path.display()
-    );
-    Ok(())
-}
-
-fn process_image(image_path: &Path, width: u32, height: u32) -> io::Result<()> {
-    // Open and decode the image
-    let img = image::open(image_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+fn process_image(
+    source_path: &Path,
+    target_path: &Path,
+    width: u32,
+    height: u32,
+) -> io::Result<()> {
+    // Open and decode the source image (PNG)
+    let img = image::open(source_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     // Convert to RGB
     let img = img.into_rgb8();
@@ -357,20 +280,17 @@ fn process_image(image_path: &Path, width: u32, height: u32) -> io::Result<()> {
     let resized =
         image::imageops::resize(&img, width, height, image::imageops::FilterType::Lanczos3);
 
-    // Create the new file path with .jpg extension
-    let new_image_path = image_path.with_extension("jpg");
-
     // Save the processed image as JPEG with high quality
     resized
-        .save_with_format(&new_image_path, image::ImageFormat::Jpeg)
+        .save_with_format(target_path, image::ImageFormat::Jpeg)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     // Final validation: ensure the processed JPEG is not corrupted
     // This catches any corruption that might have occurred during processing
-    validate_image(&new_image_path)?;
+    validate_image(target_path)?;
 
-    // Delete the original png image
-    fs::remove_file(image_path)?;
+    // Delete the temporary PNG file
+    fs::remove_file(source_path)?;
 
     Ok(())
 }
@@ -436,31 +356,22 @@ pub async fn download_card_images(
         .into_iter()
         .map(|card| {
             let image_uris = card.image_uris.unwrap();
-            let extension = image_uris
-                .png
-                .split('?')
-                .next()
-                .and_then(|url| url.rsplit('.').next())
-                .unwrap_or("jpg");
 
-            // Create a subdirectory for each card
-            let card_dir = images_dir.join(&card.id);
-            let image_path = card_dir.join(format!("0000.{}", extension));
+            // Create temp PNG path for download, final JPG path for output
+            let temp_png_path = images_dir.join(format!("{}.png", &card.id));
+            let final_jpg_path = images_dir.join(format!("{}.jpg", &card.id));
             let client = client.clone();
             let pb = pb_clone.clone();
 
             {
-                let value = card_dir.clone();
+                let temp_path = temp_png_path.clone();
+                let final_path = final_jpg_path.clone();
                 async move {
-                    // Skip if image already exists
-                    let image_path_jpg = value.join("0000.jpg");
-                    if image_path_jpg.exists() {
+                    // Skip if final JPG already exists
+                    if final_path.exists() {
                         pb.inc(1);
                         return Ok(());
                     }
-
-                    // Create the card's directory if it doesn't exist
-                    fs::create_dir_all(&value)?;
 
                     match client
                         .get(&image_uris.png)
@@ -471,23 +382,24 @@ pub async fn download_card_images(
                         Ok(response) => {
                             match response.bytes().await {
                                 Ok(bytes) => {
-                                    let mut file = fs::File::create(&image_path)?;
+                                    // Save as temporary PNG file first
+                                    let mut file = fs::File::create(&temp_path)?;
                                     file.write_all(&bytes)?;
 
-                                    // Validate the downloaded image before processing
+                                    // Validate the downloaded PNG image before processing
                                     // This catches corruption early and prevents processing invalid files
-                                    if let Err(e) = validate_image(&image_path) {
+                                    if let Err(e) = validate_image(&temp_path) {
                                         eprintln!(
                                             "Downloaded image is corrupted: {} - {}",
-                                            image_path.display(),
+                                            temp_path.display(),
                                             e
                                         );
 
-                                        // Clean up the corrupted file and its directory
+                                        // Clean up the corrupted file
                                         // This ensures no corrupted data remains in the dataset
-                                        if let Err(cleanup_err) = cleanup_directory(&value) {
+                                        if let Err(cleanup_err) = fs::remove_file(&temp_path) {
                                             eprintln!(
-                                                "Failed to cleanup corrupted image directory: {}",
+                                                "Failed to cleanup corrupted image file: {}",
                                                 cleanup_err
                                             );
                                         }
@@ -502,20 +414,29 @@ pub async fn download_card_images(
                                         ));
                                     }
 
-                                    // Process the downloaded image (resize, convert to JPEG)
+                                    // Process the downloaded PNG image (resize, convert to JPEG)
                                     // The process_image function includes additional validation after processing
-                                    if let Err(e) = process_image(&image_path, width, height) {
+                                    if let Err(e) =
+                                        process_image(&temp_path, &final_path, width, height)
+                                    {
                                         eprintln!(
-                                            "Error processing image {}: {}",
-                                            image_path.display(),
+                                            "Error processing image {} -> {}: {}",
+                                            temp_path.display(),
+                                            final_path.display(),
                                             e
                                         );
 
-                                        // Clean up the directory if processing fails
+                                        // Clean up both files if processing fails
                                         // This handles cases where corruption occurs during processing
-                                        if let Err(cleanup_err) = cleanup_directory(&value) {
+                                        if let Err(cleanup_err) = fs::remove_file(&temp_path) {
                                             eprintln!(
-                                                "Failed to cleanup failed processing directory: {}",
+                                                "Failed to cleanup temp file: {}",
+                                                cleanup_err
+                                            );
+                                        }
+                                        if let Err(cleanup_err) = fs::remove_file(&final_path) {
+                                            eprintln!(
+                                                "Failed to cleanup final file: {}",
                                                 cleanup_err
                                             );
                                         }
@@ -576,14 +497,8 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.is_dir() {
-                // Look for 0000.jpg in each card directory
-                let jpg_path = path.join("0000.jpg");
-                if jpg_path.exists() {
-                    Some(jpg_path)
-                } else {
-                    None
-                }
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "jpg") {
+                Some(path)
             } else {
                 None
             }
@@ -595,13 +510,8 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.is_dir() {
-                let jpg_path = path.join("0000.jpg");
-                if jpg_path.exists() {
-                    Some(jpg_path)
-                } else {
-                    None
-                }
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "jpg") {
+                Some(path)
             } else {
                 None
             }
@@ -612,13 +522,8 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.is_dir() {
-                let jpg_path = path.join("0000.jpg");
-                if jpg_path.exists() {
-                    Some(jpg_path)
-                } else {
-                    None
-                }
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "jpg") {
+                Some(path)
             } else {
                 None
             }
@@ -654,10 +559,8 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     if needed_test_files > 0 {
         let test_images = &train_files[..needed_test_files];
         for src_path in test_images {
-            let card_id = src_path.parent().unwrap().file_name().unwrap();
-            let dest_dir = test_dir.join(card_id);
-            fs::create_dir_all(&dest_dir)?;
-            let dest_path = dest_dir.join("0000.jpg");
+            let card_filename = src_path.file_name().unwrap();
+            let dest_path = test_dir.join(card_filename);
             fs::copy(src_path, &dest_path)?;
         }
     }
@@ -668,10 +571,8 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         let end = start + needed_valid_files;
         let valid_images = &train_files[start..end.min(train_files.len())];
         for src_path in valid_images {
-            let card_id = src_path.parent().unwrap().file_name().unwrap();
-            let dest_dir = valid_dir.join(card_id);
-            fs::create_dir_all(&dest_dir)?;
-            let dest_path = dest_dir.join("0000.jpg");
+            let card_filename = src_path.file_name().unwrap();
+            let dest_path = valid_dir.join(card_filename);
             fs::copy(src_path, &dest_path)?;
         }
     }
@@ -706,7 +607,8 @@ pub fn count_train_directories(base_path: &str) -> io::Result<usize> {
     let count = fs::read_dir(&train_dir)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
-            if entry.path().is_dir() {
+            let path = entry.path();
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "jpg") {
                 Some(())
             } else {
                 None
@@ -714,6 +616,6 @@ pub fn count_train_directories(base_path: &str) -> io::Result<usize> {
         })
         .count();
 
-    println!("\nTrain directory contains {} card directories", count);
+    println!("\nTrain directory contains {} card images", count);
     Ok(count)
 }
