@@ -360,9 +360,10 @@ pub async fn download_card_images(
         .map(|card| {
             let image_uris = card.image_uris.unwrap();
 
-            // Create temp PNG path for download, final JPG path for output
-            let temp_png_path = images_dir.join(format!("{}.png", &card.id));
-            let final_jpg_path = images_dir.join(format!("{}.jpg", &card.id));
+            // Create card subdirectory and paths
+            let card_dir = images_dir.join(&card.id);
+            let temp_png_path = card_dir.join("temp.png");
+            let final_jpg_path = card_dir.join("0000.jpg");
             let client = client.clone();
             let pb = pb_clone.clone();
             let skipped_existing_clone = skipped_existing.clone();
@@ -372,6 +373,12 @@ pub async fn download_card_images(
                 let temp_path = temp_png_path.clone();
                 let final_path = final_jpg_path.clone();
                 async move {
+                    // Create card directory
+                    if let Err(e) = fs::create_dir_all(final_path.parent().unwrap()) {
+                        pb.inc(1);
+                        return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to create card directory: {}", e)));
+                    }
+
                     // Skip if final JPG already exists
                     if final_path.exists() {
                         skipped_existing_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -509,12 +516,12 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     fs::create_dir_all(&test_dir)?;
     fs::create_dir_all(&valid_dir)?;
 
-    // Get all jpg files from train directory
-    let mut train_files: Vec<_> = fs::read_dir(&train_dir)?
+    // Get all card directories from train directory
+    let mut train_cards: Vec<_> = fs::read_dir(&train_dir)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "jpg") {
+            if path.is_dir() {
                 Some(path)
             } else {
                 None
@@ -522,110 +529,135 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         })
         .collect();
 
-    // Get existing test and validation files
-    let existing_test_files: Vec<_> = fs::read_dir(&test_dir)?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "jpg") {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Get existing test and validation card directories
+    let existing_test_cards: Vec<_> = if test_dir.exists() {
+        fs::read_dir(&test_dir)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.is_dir() {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
-    let existing_valid_files: Vec<_> = fs::read_dir(&valid_dir)?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "jpg") {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let existing_valid_cards: Vec<_> = if valid_dir.exists() {
+        fs::read_dir(&valid_dir)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.is_dir() {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
-    let total_images = train_files.len() + existing_test_files.len() + existing_valid_files.len();
+    let total_cards = train_cards.len() + existing_test_cards.len() + existing_valid_cards.len();
 
     // Calculate target numbers for test and validation sets
-    let target_test_count = (total_images as f32 * 0.03).ceil() as usize;
-    let target_valid_count = (total_images as f32 * 0.01).ceil() as usize;
+    let target_test_count = (total_cards as f32 * 0.03).ceil() as usize;
+    let target_valid_count = (total_cards as f32 * 0.01).ceil() as usize;
 
-    // Calculate how many additional files we need
-    let needed_test_files = target_test_count.saturating_sub(existing_test_files.len());
-    let needed_valid_files = target_valid_count.saturating_sub(existing_valid_files.len());
+    // Calculate how many additional card directories we need
+    let needed_test_cards = target_test_count.saturating_sub(existing_test_cards.len());
+    let needed_valid_cards = target_valid_count.saturating_sub(existing_valid_cards.len());
 
-    if needed_test_files == 0 && needed_valid_files == 0 {
-        println!("Test and validation sets already have the correct number of images");
+    if needed_test_cards == 0 && needed_valid_cards == 0 {
+        println!("Test and validation sets already have the correct number of card directories");
         println!(
-            "Total images: {}, Test: {}, Validation: {}",
-            total_images,
-            existing_test_files.len(),
-            existing_valid_files.len()
+            "Total cards: {}, Test: {}, Validation: {}",
+            total_cards,
+            existing_test_cards.len(),
+            existing_valid_cards.len()
         );
         return Ok(());
     }
 
-    // Randomly shuffle the train files
+    // Randomly shuffle the train card directories
     let mut rng = rand::rng();
-    train_files.shuffle(&mut rng);
+    train_cards.shuffle(&mut rng);
 
-    // Copy needed files to test set
-    if needed_test_files > 0 {
-        let test_images = &train_files[..needed_test_files];
-        for src_path in test_images {
-            let card_filename = src_path.file_name().unwrap();
-            let dest_path = test_dir.join(card_filename);
-            fs::copy(src_path, &dest_path)?;
+    // Copy needed card directories to test set
+    if needed_test_cards > 0 {
+        let test_cards = &train_cards[..needed_test_cards];
+        for src_card_dir in test_cards {
+            let card_dirname = src_card_dir.file_name().unwrap();
+            let dest_card_dir = test_dir.join(card_dirname);
+            copy_card_directory(src_card_dir, &dest_card_dir)?;
         }
     }
 
-    // Copy needed files to validation set
-    if needed_valid_files > 0 {
-        let start = needed_test_files;
-        let end = start + needed_valid_files;
-        let valid_images = &train_files[start..end.min(train_files.len())];
-        for src_path in valid_images {
-            let card_filename = src_path.file_name().unwrap();
-            let dest_path = valid_dir.join(card_filename);
-            fs::copy(src_path, &dest_path)?;
+    // Copy needed card directories to validation set
+    if needed_valid_cards > 0 {
+        let start = needed_test_cards;
+        let end = start + needed_valid_cards;
+        let valid_cards = &train_cards[start..end.min(train_cards.len())];
+        for src_card_dir in valid_cards {
+            let card_dirname = src_card_dir.file_name().unwrap();
+            let dest_card_dir = valid_dir.join(card_dirname);
+            copy_card_directory(src_card_dir, &dest_card_dir)?;
         }
     }
 
     println!("Dataset split updated:");
-    println!("Total images: {}", total_images);
+    println!("Total cards: {}", total_cards);
     println!(
         "Test set: {} existing + {} new = {} total (target: {})",
-        existing_test_files.len(),
-        needed_test_files,
-        existing_test_files.len() + needed_test_files,
+        existing_test_cards.len(),
+        needed_test_cards,
+        existing_test_cards.len() + needed_test_cards,
         target_test_count
     );
     println!(
         "Validation set: {} existing + {} new = {} total (target: {})",
-        existing_valid_files.len(),
-        needed_valid_files,
-        existing_valid_files.len() + needed_valid_files,
+        existing_valid_cards.len(),
+        needed_valid_cards,
+        existing_valid_cards.len() + needed_valid_cards,
         target_valid_count
     );
 
     Ok(())
 }
 
-pub fn count_train_directories(base_path: &str) -> io::Result<usize> {
+// Helper function to copy a card directory and all its contents
+fn copy_card_directory(src: &Path, dest: &Path) -> io::Result<()> {
+    fs::create_dir_all(dest)?;
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+
+        if src_path.is_file() {
+            fs::copy(&src_path, &dest_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn count_train_directories(base_path: &str) -> io::Result<()> {
     let train_dir = Path::new(base_path).join("data/train");
 
     if !train_dir.exists() {
-        return Ok(0);
+        println!("Train directory does not exist yet");
+        return Ok(());
     }
 
-    let count = fs::read_dir(&train_dir)?
+    let dir_count = fs::read_dir(&train_dir)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "jpg") {
+            if entry.path().is_dir() {
                 Some(())
             } else {
                 None
@@ -633,6 +665,6 @@ pub fn count_train_directories(base_path: &str) -> io::Result<usize> {
         })
         .count();
 
-    println!("\nTrain directory contains {} card images", count);
-    Ok(count)
+    println!("Total train card directories: {}", dir_count);
+    Ok(())
 }

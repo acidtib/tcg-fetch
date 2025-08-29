@@ -84,13 +84,19 @@ The tool creates a directory with the following structure:
 <output-dir>/
 ├── data/
 │   ├── train/
-│   │   └── <card-id>.jpg    # Original image
+│   │   └── <card-id>/
+│   │       └── 0000.jpg     # Original downloaded image
 │   ├── test/
-│   │   └── <card-id>.jpg    # Test image
+│   │   └── <card-id>/
+│   │       └── 0000.jpg     # Test image (copied from train)
 │   ├── validation/
-│   │   └── <card-id>.jpg    # Validation image
+│   │   └── <card-id>/
+│   │       └── 0000.jpg     # Validation image (copied from train)
+│   │       └── 0001.jpg
 └── <data-type>.json
 ```
+
+Each card gets its own subdirectory named after the card ID. The primary image is saved as `0000.jpg`, with additional images numbered sequentially (0001.jpg, 0002.jpg, etc.) ithat can be added in the future.
 
 ## Command Line Options
 
