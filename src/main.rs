@@ -62,9 +62,11 @@ async fn main() -> std::io::Result<()> {
                 println!("  - {}", file);
             }
 
+            let mut total_skipped_existing = 0;
+            let mut total_skipped_soon = 0;
             for file in files {
                 println!("\nProcessing file: {}", file);
-                if let Err(e) = utils::download_card_images(
+                match utils::download_card_images(
                     &file,
                     &args.path,
                     args.amount.as_deref(),
@@ -74,7 +76,24 @@ async fn main() -> std::io::Result<()> {
                 )
                 .await
                 {
-                    eprintln!("Error downloading images: {}", e);
+                    Ok((skipped_existing, skipped_soon)) => {
+                        total_skipped_existing += skipped_existing;
+                        total_skipped_soon += skipped_soon;
+                    }
+                    Err(e) => eprintln!("Error downloading images: {}", e),
+                }
+            }
+
+            if total_skipped_existing > 0 || total_skipped_soon > 0 {
+                println!();
+                if total_skipped_existing > 0 {
+                    println!("Skipped {} cards (already existed)", total_skipped_existing);
+                }
+                if total_skipped_soon > 0 {
+                    println!(
+                        "Skipped {} cards (soon.jpg placeholder images)",
+                        total_skipped_soon
+                    );
                 }
             }
 

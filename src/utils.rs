@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::{atomic::AtomicUsize, Arc};
 use tokio;
 
 // Map our data types to Scryfall's types
@@ -302,7 +303,7 @@ pub async fn download_card_images(
     thread_count: usize,
     width: u32,
     height: u32,
-) -> io::Result<()> {
+) -> io::Result<(usize, usize)> {
     let client = reqwest::Client::new();
     let images_dir = Path::new(output_dir).join("data/train");
     fs::create_dir_all(&images_dir)?;
@@ -351,6 +352,8 @@ pub async fn download_card_images(
     );
 
     let pb_clone = pb.clone();
+    let skipped_existing = Arc::new(AtomicUsize::new(0));
+    let skipped_soon = Arc::new(AtomicUsize::new(0));
 
     let downloads = cards_to_process
         .into_iter()
@@ -362,6 +365,8 @@ pub async fn download_card_images(
             let final_jpg_path = images_dir.join(format!("{}.jpg", &card.id));
             let client = client.clone();
             let pb = pb_clone.clone();
+            let skipped_existing_clone = skipped_existing.clone();
+            let skipped_soon_clone = skipped_soon.clone();
 
             {
                 let temp_path = temp_png_path.clone();
@@ -369,6 +374,14 @@ pub async fn download_card_images(
                 async move {
                     // Skip if final JPG already exists
                     if final_path.exists() {
+                        skipped_existing_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        pb.inc(1);
+                        return Ok(());
+                    }
+
+                    // Skip cards with Scryfall's placeholder "soon.jpg" image
+                    if image_uris.png.contains("errors.scryfall.com/soon.jpg") {
+                        skipped_soon_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         pb.inc(1);
                         return Ok(());
                     }
@@ -390,9 +403,10 @@ pub async fn download_card_images(
                                     // This catches corruption early and prevents processing invalid files
                                     if let Err(e) = validate_image(&temp_path) {
                                         eprintln!(
-                                            "Downloaded image is corrupted: {} - {}",
+                                            "Downloaded image is corrupted: {} - {} - URL: {}",
                                             temp_path.display(),
-                                            e
+                                            e,
+                                            image_uris.png
                                         );
 
                                         // Clean up the corrupted file
@@ -408,8 +422,9 @@ pub async fn download_card_images(
                                         return Err(io::Error::new(
                                             io::ErrorKind::InvalidData,
                                             format!(
-                                                "Corrupted image detected and cleaned up: {}",
-                                                e
+                                                "Corrupted image detected and cleaned up: {} - URL: {}",
+                                                e,
+                                                image_uris.png
                                             ),
                                         ));
                                     }
@@ -480,7 +495,9 @@ pub async fn download_card_images(
         ));
     }
 
-    Ok(())
+    let final_skipped_existing = skipped_existing.load(std::sync::atomic::Ordering::Relaxed);
+    let final_skipped_soon = skipped_soon.load(std::sync::atomic::Ordering::Relaxed);
+    Ok((final_skipped_existing, final_skipped_soon))
 }
 
 pub fn split_dataset(base_path: &str) -> io::Result<()> {
