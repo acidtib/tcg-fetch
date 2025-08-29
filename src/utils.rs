@@ -2,11 +2,13 @@ use futures::stream::StreamExt;
 use image::GenericImageView;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::seq::SliceRandom;
+use rayon::prelude::*;
 use reqwest;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio;
 
@@ -55,21 +57,28 @@ struct Card {
 pub fn ensure_directories(base_path: &str) -> io::Result<()> {
     let base_path = Path::new(base_path);
 
-    // Create base directory if it doesn't exist
-    if !base_path.exists() {
-        fs::create_dir_all(&base_path)?;
-        println!("Created base directory: {}", base_path.display());
-    }
+    let dirs_to_create = vec![
+        base_path.to_path_buf(),
+        base_path.join("data"),
+        base_path.join("data/train"),
+        base_path.join("data/test"),
+        base_path.join("data/validation"),
+    ];
 
-    // Create required subdirectories
-    let subdirs = ["data", "data/train", "data/test", "data/validation"];
-    for subdir in subdirs {
-        let dir_path = base_path.join(subdir);
-        if !dir_path.exists() {
-            fs::create_dir(&dir_path)?;
-            println!("Created directory: {}", dir_path.display());
-        }
-    }
+    // Check which directories don't exist
+    let missing_dirs: Vec<PathBuf> = dirs_to_create
+        .into_par_iter()
+        .filter(|dir| !dir.exists())
+        .collect();
+
+    // Create missing directories in parallel
+    missing_dirs
+        .par_iter()
+        .try_for_each(|dir| -> io::Result<()> {
+            fs::create_dir_all(dir)?;
+            println!("Created directory: {}", dir.display());
+            Ok(())
+        })?;
 
     println!("All required directories are ready!");
     Ok(())
@@ -77,19 +86,18 @@ pub fn ensure_directories(base_path: &str) -> io::Result<()> {
 
 pub fn check_json_files(directory: &str) -> Vec<String> {
     let base_path = Path::new(directory);
-    let required_json_files: Vec<String> = BULK_DATA_TYPES
+    let required_json_files: Vec<(String, PathBuf)> = BULK_DATA_TYPES
         .iter()
         .map(|data_type| {
-            base_path
-                .join(format!("{}.json", data_type))
-                .to_string_lossy()
-                .into_owned()
+            let path = base_path.join(format!("{}.json", data_type));
+            (path.to_string_lossy().into_owned(), path)
         })
         .collect();
 
     required_json_files
-        .into_iter()
-        .filter(|file| Path::new(file).exists())
+        .into_par_iter()
+        .filter(|(_, path)| path.exists())
+        .map(|(file_str, _)| file_str)
         .collect()
 }
 
@@ -341,7 +349,30 @@ pub async fn download_card_images(
         total_available, total_cards, thread_count
     );
 
-    let pb = ProgressBar::new(total_cards as u64);
+    // Batch check which cards already exist
+    let card_ids: Vec<String> = cards_to_process
+        .iter()
+        .map(|card| card.id.clone())
+        .collect();
+    let existing_cards = batch_check_existing_cards(output_dir, &card_ids);
+
+    // Filter out cards that already exist
+    let cards_to_download: Vec<_> = cards_to_process
+        .into_iter()
+        .filter(|card| !existing_cards.get(&card.id).unwrap_or(&false))
+        .collect();
+
+    let cards_to_download_count = cards_to_download.len();
+    let already_existed = total_cards - cards_to_download_count;
+
+    println!("Skipping {} cards that already exist", already_existed);
+    println!("Downloading {} new cards", cards_to_download_count);
+
+    if cards_to_download.is_empty() {
+        return Ok((already_existed, 0));
+    }
+
+    let pb = ProgressBar::new(cards_to_download_count as u64);
     pb.set_style(
         ProgressStyle::default_bar()
             .template(
@@ -352,158 +383,129 @@ pub async fn download_card_images(
     );
 
     let pb_clone = pb.clone();
-    let skipped_existing = Arc::new(AtomicUsize::new(0));
+    let skipped_existing = Arc::new(AtomicUsize::new(already_existed));
     let skipped_soon = Arc::new(AtomicUsize::new(0));
 
-    let downloads = cards_to_process
-        .into_iter()
-        .map(|card| {
-            let image_uris = card.image_uris.unwrap();
+    let downloads = cards_to_download.into_iter().map(|card| {
+        let image_uris = card.image_uris.unwrap();
+        let card_dir = images_dir.join(&card.id);
+        let temp_png_path = card_dir.join("temp.png");
+        let final_jpg_path = card_dir.join("0000.jpg");
+        let client = client.clone();
+        let pb = pb_clone.clone();
+        let skipped_soon_clone = skipped_soon.clone();
 
-            // Create card subdirectory and paths
-            let card_dir = images_dir.join(&card.id);
-            let temp_png_path = card_dir.join("temp.png");
-            let final_jpg_path = card_dir.join("0000.jpg");
-            let client = client.clone();
-            let pb = pb_clone.clone();
-            let skipped_existing_clone = skipped_existing.clone();
-            let skipped_soon_clone = skipped_soon.clone();
+        {
+            let temp_path = temp_png_path.clone();
+            let final_path = final_jpg_path.clone();
+            async move {
+                // Create card directory
+                if let Err(e) = fs::create_dir_all(final_path.parent().unwrap()) {
+                    pb.inc(1);
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Failed to create card directory: {}", e),
+                    ));
+                }
 
-            {
-                let temp_path = temp_png_path.clone();
-                let final_path = final_jpg_path.clone();
-                async move {
-                    // Create card directory
-                    if let Err(e) = fs::create_dir_all(final_path.parent().unwrap()) {
-                        pb.inc(1);
-                        return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to create card directory: {}", e)));
-                    }
+                // Skip cards with Scryfall's placeholder "soon.jpg" image
+                if image_uris.png.contains("errors.scryfall.com/soon.jpg") {
+                    skipped_soon_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    pb.inc(1);
+                    return Ok(());
+                }
 
-                    // Skip if final JPG already exists
-                    if final_path.exists() {
-                        skipped_existing_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        pb.inc(1);
-                        return Ok(());
-                    }
+                match client
+                    .get(&image_uris.png)
+                    .header("User-Agent", "OjoFetchMagic/1.0")
+                    .send()
+                    .await
+                {
+                    Ok(response) => match response.bytes().await {
+                        Ok(bytes) => {
+                            let mut file = fs::File::create(&temp_path)?;
+                            file.write_all(&bytes)?;
 
-                    // Skip cards with Scryfall's placeholder "soon.jpg" image
-                    if image_uris.png.contains("errors.scryfall.com/soon.jpg") {
-                        skipped_soon_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        pb.inc(1);
-                        return Ok(());
-                    }
-
-                    match client
-                        .get(&image_uris.png)
-                        .header("User-Agent", "OjoFetchMagic/1.0")
-                        .send()
-                        .await
-                    {
-                        Ok(response) => {
-                            match response.bytes().await {
-                                Ok(bytes) => {
-                                    // Save as temporary PNG file first
-                                    let mut file = fs::File::create(&temp_path)?;
-                                    file.write_all(&bytes)?;
-
-                                    // Validate the downloaded PNG image before processing
-                                    // This catches corruption early and prevents processing invalid files
-                                    if let Err(e) = validate_image(&temp_path) {
-                                        eprintln!(
-                                            "Downloaded image is corrupted: {} - {} - URL: {}",
-                                            temp_path.display(),
-                                            e,
-                                            image_uris.png
-                                        );
-
-                                        // Clean up the corrupted file
-                                        // This ensures no corrupted data remains in the dataset
-                                        if let Err(cleanup_err) = fs::remove_file(&temp_path) {
-                                            eprintln!(
-                                                "Failed to cleanup corrupted image file: {}",
-                                                cleanup_err
-                                            );
-                                        }
-
-                                        pb.inc(1);
-                                        return Err(io::Error::new(
-                                            io::ErrorKind::InvalidData,
-                                            format!(
-                                                "Corrupted image detected and cleaned up: {} - URL: {}",
-                                                e,
-                                                image_uris.png
-                                            ),
-                                        ));
-                                    }
-
-                                    // Process the downloaded PNG image (resize, convert to JPEG)
-                                    // The process_image function includes additional validation after processing
-                                    if let Err(e) =
-                                        process_image(&temp_path, &final_path, width, height)
-                                    {
-                                        eprintln!(
-                                            "Error processing image {} -> {}: {}",
-                                            temp_path.display(),
-                                            final_path.display(),
-                                            e
-                                        );
-
-                                        // Clean up both files if processing fails
-                                        // This handles cases where corruption occurs during processing
-                                        if let Err(cleanup_err) = fs::remove_file(&temp_path) {
-                                            eprintln!(
-                                                "Failed to cleanup temp file: {}",
-                                                cleanup_err
-                                            );
-                                        }
-                                        if let Err(cleanup_err) = fs::remove_file(&final_path) {
-                                            eprintln!(
-                                                "Failed to cleanup final file: {}",
-                                                cleanup_err
-                                            );
-                                        }
-
-                                        pb.inc(1);
-                                        return Err(io::Error::new(
-                                            io::ErrorKind::Other,
-                                            format!("Image processing failed: {}", e),
-                                        ));
-                                    }
-
-                                    pb.inc(1);
-                                    Ok(())
+                            if let Err(e) = validate_image(&temp_path) {
+                                if let Err(cleanup_err) = fs::remove_file(&temp_path) {
+                                    eprintln!(
+                                        "Failed to cleanup corrupted image file: {}",
+                                        cleanup_err
+                                    );
                                 }
-                                Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+                                pb.inc(1);
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "Corrupted image detected: {} - URL: {}",
+                                        e, image_uris.png
+                                    ),
+                                ));
                             }
+
+                            if let Err(e) = process_image(&temp_path, &final_path, width, height) {
+                                eprintln!(
+                                    "Error processing image {} -> {}: {}",
+                                    temp_path.display(),
+                                    final_path.display(),
+                                    e
+                                );
+                                // Only try to cleanup temp file if it still exists (process_image failed)
+                                if temp_path.exists() {
+                                    if let Err(cleanup_err) = fs::remove_file(&temp_path) {
+                                        eprintln!("Failed to cleanup temp file: {}", cleanup_err);
+                                    }
+                                }
+                                pb.inc(1);
+                                return Err(e);
+                            }
+
+                            pb.inc(1);
+                            Ok(())
                         }
-                        Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+                        Err(e) => {
+                            pb.inc(1);
+                            Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                format!("Failed to read response bytes: {}", e),
+                            ))
+                        }
+                    },
+                    Err(e) => {
+                        pb.inc(1);
+                        Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("HTTP request failed: {}", e),
+                        ))
                     }
                 }
             }
+        }
+    });
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(thread_count));
+    let results: Vec<_> = futures::stream::iter(downloads)
+        .map(|download| {
+            let semaphore = semaphore.clone();
+            async move {
+                let _permit = semaphore.acquire().await.unwrap();
+                download.await
+            }
         })
-        .collect::<Vec<_>>();
-
-    // Process downloads in parallel with the specified number of threads
-    let stream = futures::stream::iter(downloads)
         .buffer_unordered(thread_count)
-        .collect::<Vec<_>>();
+        .collect()
+        .await;
 
-    let results = stream.await;
-    pb.finish_with_message("Download completed");
+    pb.finish_with_message("Download complete!");
 
-    // Count successes and failures
-    let failures: Vec<_> = results.into_iter().filter(|r| r.is_err()).collect();
-
-    if !failures.is_empty() {
-        println!("\nFailed to download {} images", failures.len());
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to download {} images", failures.len()),
-        ));
+    let failed_downloads = results.iter().filter(|r| r.is_err()).count();
+    if failed_downloads > 0 {
+        eprintln!("Warning: {} downloads failed", failed_downloads);
     }
 
     let final_skipped_existing = skipped_existing.load(std::sync::atomic::Ordering::Relaxed);
     let final_skipped_soon = skipped_soon.load(std::sync::atomic::Ordering::Relaxed);
+
     Ok((final_skipped_existing, final_skipped_soon))
 }
 
@@ -516,24 +518,17 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     fs::create_dir_all(&test_dir)?;
     fs::create_dir_all(&valid_dir)?;
 
-    // Get all card directories from train directory
-    let mut train_cards: Vec<_> = fs::read_dir(&train_dir)?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.is_dir() {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Get all directories in parallel
+    let get_dirs_parallel = |dir: &Path| -> io::Result<Vec<PathBuf>> {
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
 
-    // Get existing test and validation card directories
-    let existing_test_cards: Vec<_> = if test_dir.exists() {
-        fs::read_dir(&test_dir)?
+        let entries: Vec<_> = fs::read_dir(dir)?.filter_map(|entry| entry.ok()).collect();
+
+        Ok(entries
+            .par_iter()
             .filter_map(|entry| {
-                let entry = entry.ok()?;
                 let path = entry.path();
                 if path.is_dir() {
                     Some(path)
@@ -541,26 +536,12 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
                     None
                 }
             })
-            .collect()
-    } else {
-        Vec::new()
+            .collect())
     };
 
-    let existing_valid_cards: Vec<_> = if valid_dir.exists() {
-        fs::read_dir(&valid_dir)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.is_dir() {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let mut train_cards = get_dirs_parallel(&train_dir)?;
+    let existing_test_cards = get_dirs_parallel(&test_dir)?;
+    let existing_valid_cards = get_dirs_parallel(&valid_dir)?;
 
     let total_cards = train_cards.len() + existing_test_cards.len() + existing_valid_cards.len();
 
@@ -583,50 +564,69 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
         return Ok(());
     }
 
-    // Randomly shuffle the train card directories
+    println!(
+        "Moving {} cards to test and {} cards to validation",
+        needed_test_cards, needed_valid_cards
+    );
+
+    // Shuffle train cards for random selection
     let mut rng = rand::rng();
     train_cards.shuffle(&mut rng);
 
-    // Copy needed card directories to test set
-    if needed_test_cards > 0 {
-        let test_cards = &train_cards[..needed_test_cards];
-        for src_card_dir in test_cards {
-            let card_dirname = src_card_dir.file_name().unwrap();
-            let dest_card_dir = test_dir.join(card_dirname);
-            copy_card_directory(src_card_dir, &dest_card_dir)?;
-        }
+    // Move cards to test set in parallel if needed
+    if needed_test_cards > 0 && train_cards.len() >= needed_test_cards {
+        let test_cards: Vec<_> = train_cards.drain(0..needed_test_cards).collect();
+
+        test_cards
+            .par_iter()
+            .try_for_each(|card_dir| -> io::Result<()> {
+                let card_name = card_dir.file_name().unwrap();
+                let dest_dir = test_dir.join(card_name);
+                copy_card_directory(card_dir, &dest_dir)?;
+                fs::remove_dir_all(card_dir)?;
+                Ok(())
+            })?;
     }
 
-    // Copy needed card directories to validation set
-    if needed_valid_cards > 0 {
-        let start = needed_test_cards;
-        let end = start + needed_valid_cards;
-        let valid_cards = &train_cards[start..end.min(train_cards.len())];
-        for src_card_dir in valid_cards {
-            let card_dirname = src_card_dir.file_name().unwrap();
-            let dest_card_dir = valid_dir.join(card_dirname);
-            copy_card_directory(src_card_dir, &dest_card_dir)?;
-        }
+    // Move cards to validation set in parallel if needed
+    if needed_valid_cards > 0 && train_cards.len() >= needed_valid_cards {
+        let valid_cards: Vec<_> = train_cards.drain(0..needed_valid_cards).collect();
+
+        valid_cards
+            .par_iter()
+            .try_for_each(|card_dir| -> io::Result<()> {
+                let card_name = card_dir.file_name().unwrap();
+                let dest_dir = valid_dir.join(card_name);
+                copy_card_directory(card_dir, &dest_dir)?;
+                fs::remove_dir_all(card_dir)?;
+                Ok(())
+            })?;
     }
 
-    println!("Dataset split updated:");
-    println!("Total cards: {}", total_cards);
+    let final_train = train_cards.len();
+    let final_test = existing_test_cards.len() + needed_test_cards;
+    let final_valid = existing_valid_cards.len() + needed_valid_cards;
+
     println!(
-        "Test set: {} existing + {} new = {} total (target: {})",
-        existing_test_cards.len(),
-        needed_test_cards,
-        existing_test_cards.len() + needed_test_cards,
-        target_test_count
-    );
-    println!(
-        "Validation set: {} existing + {} new = {} total (target: {})",
-        existing_valid_cards.len(),
-        needed_valid_cards,
-        existing_valid_cards.len() + needed_valid_cards,
-        target_valid_count
+        "Dataset split complete: Train: {}, Test: {}, Validation: {}",
+        final_train, final_test, final_valid
     );
 
     Ok(())
+}
+
+/// Batch check if card directories exist for faster filtering during download
+pub fn batch_check_existing_cards(base_path: &str, card_ids: &[String]) -> HashMap<String, bool> {
+    let train_dir = Path::new(base_path).join("data/train");
+
+    card_ids
+        .par_iter()
+        .map(|card_id| {
+            let card_dir = train_dir.join(card_id);
+            let final_jpg = card_dir.join("0000.jpg");
+            (card_id.clone(), final_jpg.exists())
+        })
+        .collect()
 }
 
 // Helper function to copy a card directory and all its contents
@@ -654,15 +654,13 @@ pub fn count_train_directories(base_path: &str) -> io::Result<()> {
         return Ok(());
     }
 
-    let dir_count = fs::read_dir(&train_dir)?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            if entry.path().is_dir() {
-                Some(())
-            } else {
-                None
-            }
-        })
+    let entries: Vec<_> = fs::read_dir(&train_dir)?
+        .filter_map(|entry| entry.ok())
+        .collect();
+
+    let dir_count = entries
+        .par_iter()
+        .filter(|entry| entry.path().is_dir())
         .count();
 
     println!("Total train card directories: {}", dir_count);
