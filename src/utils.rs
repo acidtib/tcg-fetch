@@ -68,8 +68,8 @@ pub struct GaCard {
 
 #[derive(Debug, Deserialize)]
 pub struct GaCardDetail {
+    #[allow(dead_code)]
     pub name: String,
-    pub slug: String,
     pub editions: Vec<GaEdition>,
 }
 
@@ -77,21 +77,6 @@ pub struct GaCardDetail {
 pub struct GaEdition {
     pub slug: String,
     pub image: String,
-    pub uuid: String,
-    #[serde(default)]
-    pub circulations: Option<Vec<GaCirculation>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GaCirculation {
-    pub variants: Option<Vec<GaVariant>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GaVariant {
-    pub image: String,
-    pub description: String,
-    pub uuid: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -958,7 +943,7 @@ mod tests {
         match card_detail {
             Ok(card) => {
                 println!("Successfully parsed card: {}", card.name);
-                println!("Card slug: {}", card.slug);
+
                 println!("Number of editions: {}", card.editions.len());
 
                 for (i, edition) in card.editions.iter().enumerate() {
@@ -972,7 +957,6 @@ mod tests {
 
                 // Test the specific data you need
                 assert_eq!(card.name, "Academy Guide");
-                assert_eq!(card.slug, "academy-guide");
                 assert_eq!(card.editions.len(), 2);
 
                 // Check first edition
@@ -1005,7 +989,6 @@ mod tests {
         match fetch_ga_card_detail(&client, "academy-guide").await {
             Ok(card_detail) => {
                 println!("Successfully fetched card: {}", card_detail.name);
-                println!("Card slug: {}", card_detail.slug);
                 println!("Number of editions: {}", card_detail.editions.len());
 
                 for (i, edition) in card_detail.editions.iter().enumerate() {
@@ -1015,26 +998,10 @@ mod tests {
                         edition.slug,
                         edition.image
                     );
-
-                    // Check if this edition has variants
-                    if let Some(circulations) = &edition.circulations {
-                        for circulation in circulations {
-                            if let Some(variants) = &circulation.variants {
-                                println!("  Found {} variants:", variants.len());
-                                for variant in variants {
-                                    println!(
-                                        "    Variant: {}, Image: {}",
-                                        variant.description, variant.image
-                                    );
-                                }
-                            }
-                        }
-                    }
                 }
 
                 // Basic assertions
                 assert_eq!(card_detail.name, "Academy Guide");
-                assert_eq!(card_detail.slug, "academy-guide");
                 assert!(
                     !card_detail.editions.is_empty(),
                     "Should have at least one edition"
