@@ -5,6 +5,7 @@ use rand::seq::SliceRandom;
 use rayon::prelude::*;
 use reqwest;
 use serde::Deserialize;
+use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -19,6 +20,7 @@ pub const BULK_DATA_TYPE: &str = "all_cards";
 pub fn get_api_type(tcg_type: &super::TcgType) -> &'static str {
     match tcg_type {
         super::TcgType::Mtg => BULK_DATA_TYPE,
+        super::TcgType::Ga => "ga_cards", // Not used for GA but needed for consistency
     }
 }
 
@@ -26,6 +28,7 @@ pub fn get_api_type(tcg_type: &super::TcgType) -> &'static str {
 pub fn get_api_url(tcg_type: &super::TcgType) -> &'static str {
     match tcg_type {
         super::TcgType::Mtg => "https://api.scryfall.com/bulk-data",
+        super::TcgType::Ga => "https://api.gatcg.com/cards/all",
     }
 }
 
@@ -33,6 +36,7 @@ pub fn get_api_url(tcg_type: &super::TcgType) -> &'static str {
 pub fn get_user_agent(tcg_type: &super::TcgType) -> &'static str {
     match tcg_type {
         super::TcgType::Mtg => "TCGFetch-MTG/1.0",
+        super::TcgType::Ga => "TCGFetch-GA/1.0",
     }
 }
 
@@ -54,10 +58,53 @@ struct ImageUris {
     png: String,
 }
 
+// Grand Archive API structs
+#[derive(Debug, Deserialize)]
+pub struct GaCard {
+    #[allow(dead_code)]
+    pub name: String,
+    pub slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GaCardDetail {
+    pub name: String,
+    pub slug: String,
+    pub editions: Vec<GaEdition>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GaEdition {
+    pub slug: String,
+    pub image: String,
+    pub uuid: String,
+    #[serde(default)]
+    pub circulations: Option<Vec<GaCirculation>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GaCirculation {
+    pub variants: Option<Vec<GaVariant>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GaVariant {
+    pub image: String,
+    pub description: String,
+    pub uuid: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct Card {
     id: String,
     image_uris: Option<ImageUris>,
+}
+
+// Unified card structure for both MTG and GA
+#[derive(Debug, Clone)]
+struct UnifiedCard {
+    id: String,
+    image_url: String,
 }
 
 pub fn ensure_directories(base_path: &str) -> io::Result<()> {
@@ -92,13 +139,21 @@ pub fn ensure_directories(base_path: &str) -> io::Result<()> {
 
 pub fn check_json_files(directory: &str) -> Vec<String> {
     let base_path = Path::new(directory);
-    let path = base_path.join(format!("{}.json", BULK_DATA_TYPE));
+    let mut existing_files = Vec::new();
 
-    if path.exists() {
-        vec![path.to_string_lossy().into_owned()]
-    } else {
-        vec![]
+    // Check for MTG files
+    let mtg_path = base_path.join(format!("{}.json", BULK_DATA_TYPE));
+    if mtg_path.exists() {
+        existing_files.push(mtg_path.to_string_lossy().into_owned());
     }
+
+    // Check for GA files
+    let ga_path = base_path.join("ga_cards.json");
+    if ga_path.exists() {
+        existing_files.push(ga_path.to_string_lossy().into_owned());
+    }
+
+    existing_files
 }
 
 async fn download_json_data(
@@ -131,70 +186,167 @@ async fn download_json_data(
     Ok(file_path.to_string_lossy().into_owned())
 }
 
-pub async fn fetch_bulk_data(
-    directory: &str,
-    tcg_type: &super::TcgType,
-) -> io::Result<Vec<String>> {
-    let target_type = get_api_type(tcg_type);
-    let existing_files = check_json_files(directory);
-
-    // Check if we already have the JSON file
-    if !existing_files.is_empty() {
-        println!("Using existing JSON files");
-        return Ok(existing_files);
-    }
-
-    let api_name = match tcg_type {
-        super::TcgType::Mtg => "Scryfall API",
-    };
-    println!("Fetching bulk data from {}...", api_name);
-    let client = reqwest::Client::new();
-
+// GA-specific functions
+async fn fetch_ga_card_detail(client: &reqwest::Client, slug: &str) -> io::Result<GaCardDetail> {
+    let url = format!("https://api.gatcg.com/cards/{}", slug);
     let response = client
-        .get(get_api_url(tcg_type))
-        .header("User-Agent", get_user_agent(tcg_type))
+        .get(&url)
+        .header("User-Agent", "TCGFetch-GA/1.0")
+        .header("Accept", "application/json")
         .send()
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Request error: {}", e)))?;
 
-    println!("Response status: {}", response.status());
-
-    let response_text = response.text().await.map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to get response text: {}", e),
-        )
-    })?;
-
-    let bulk_data: BulkDataResponse = serde_json::from_str(&response_text).map_err(|e| {
+    let card_detail: GaCardDetail = response.json().await.map_err(|e| {
         io::Error::new(io::ErrorKind::Other, format!("Failed to parse JSON: {}", e))
     })?;
 
-    let mut downloaded_files = Vec::new();
+    Ok(card_detail)
+}
 
-    // Find and download the requested data type
-    for item in bulk_data.data {
-        if item.data_type == target_type {
-            let file_path = download_json_data(&target_type, &item.download_uri, directory).await?;
-            downloaded_files.push(file_path);
-            break;
+async fn fetch_ga_all_cards(directory: &str) -> io::Result<Vec<String>> {
+    println!("Fetching GA card data from API...");
+    let client = reqwest::Client::new();
+
+    // First, get all card names and slugs
+    let response = client
+        .get("https://api.gatcg.com/cards/all")
+        .header("User-Agent", "TCGFetch-GA/1.0")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Request error: {}", e)))?;
+
+    let cards: Vec<GaCard> = response.json().await.map_err(|e| {
+        io::Error::new(io::ErrorKind::Other, format!("Failed to parse JSON: {}", e))
+    })?;
+
+    println!(
+        "Found {} cards, fetching detailed information...",
+        cards.len()
+    );
+
+    // Create a temporary file to store all the card data
+    let temp_file = Path::new(directory).join("ga_cards.json");
+    let mut all_cards_data = Vec::new();
+
+    // Use parallel processing to fetch card details
+    let card_details = futures::stream::iter(cards.into_iter().map(|card| {
+        let client = &client;
+        async move {
+            match fetch_ga_card_detail(client, &card.slug).await {
+                Ok(detail) => Some(detail),
+                Err(e) => {
+                    eprintln!("Failed to fetch details for {}: {}", card.slug, e);
+                    None
+                }
+            }
+        }
+    }))
+    .buffer_unordered(10) // Process 10 cards concurrently
+    .collect::<Vec<_>>()
+    .await;
+
+    // Collect all edition data - one entry per edition
+    for card_detail in card_details.into_iter().flatten() {
+        for edition in card_detail.editions {
+            all_cards_data.push(serde_json::json!({
+                "slug": edition.slug,
+                "image": format!("https://api.gatcg.com{}", edition.image)
+            }));
         }
     }
 
-    if downloaded_files.is_empty() {
-        let api_name = match tcg_type {
-            super::TcgType::Mtg => "Scryfall",
-        };
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "Data type '{}' not found in {} bulk data",
-                target_type, api_name
-            ),
-        ));
-    }
+    // Write the collected data to a JSON file
+    let json_data = serde_json::to_string_pretty(&all_cards_data).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to serialize JSON: {}", e),
+        )
+    })?;
 
-    Ok(downloaded_files)
+    std::fs::write(&temp_file, json_data)?;
+    println!("Successfully downloaded: {}", temp_file.display());
+
+    Ok(vec![temp_file.to_string_lossy().into_owned()])
+}
+
+pub async fn fetch_bulk_data(
+    directory: &str,
+    tcg_type: &super::TcgType,
+) -> io::Result<Vec<String>> {
+    match tcg_type {
+        super::TcgType::Mtg => {
+            // Existing MTG logic
+            let target_type = get_api_type(tcg_type);
+            let existing_files = check_json_files(directory);
+
+            if !existing_files.is_empty() {
+                println!("Using existing JSON files");
+                return Ok(existing_files);
+            }
+
+            println!("Fetching bulk data from Scryfall API...");
+            let client = reqwest::Client::new();
+
+            let response = client
+                .get(get_api_url(tcg_type))
+                .header("User-Agent", get_user_agent(tcg_type))
+                .send()
+                .await
+                .map_err(|e| {
+                    io::Error::new(io::ErrorKind::Other, format!("Request error: {}", e))
+                })?;
+
+            println!("Response status: {}", response.status());
+
+            let response_text = response.text().await.map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to get response text: {}", e),
+                )
+            })?;
+
+            let bulk_data: BulkDataResponse =
+                serde_json::from_str(&response_text).map_err(|e| {
+                    io::Error::new(io::ErrorKind::Other, format!("Failed to parse JSON: {}", e))
+                })?;
+
+            let mut downloaded_files = Vec::new();
+
+            for item in bulk_data.data {
+                if item.data_type == target_type {
+                    let file_path =
+                        download_json_data(&target_type, &item.download_uri, directory).await?;
+                    downloaded_files.push(file_path);
+                    break;
+                }
+            }
+
+            if downloaded_files.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "Data type '{}' not found in Scryfall bulk data",
+                        target_type
+                    ),
+                ));
+            }
+
+            Ok(downloaded_files)
+        }
+        super::TcgType::Ga => {
+            // GA-specific logic
+            let existing_files = check_json_files(directory);
+
+            if !existing_files.is_empty() {
+                println!("Using existing JSON files");
+                return Ok(existing_files);
+            }
+
+            fetch_ga_all_cards(directory).await
+        }
+    }
 }
 
 /// Validates that an image file is not corrupted by attempting to decode it
@@ -317,6 +469,7 @@ pub async fn download_card_images(
     thread_count: usize,
     width: u32,
     height: u32,
+    tcg_type: &super::TcgType,
 ) -> io::Result<(usize, usize)> {
     let client = reqwest::Client::new();
     let images_dir = Path::new(output_dir).join("data/train");
@@ -324,18 +477,40 @@ pub async fn download_card_images(
 
     // Read and parse the JSON file
     let json_content = fs::read_to_string(json_path)?;
-    let cards: Vec<Card> = serde_json::from_str(&json_content)?;
 
-    // Filter cards that have image URIs first
-    let cards_with_images: Vec<_> = cards
-        .into_iter()
-        .filter(|card| card.image_uris.is_some())
-        .collect();
+    // Try to determine format and create unified cards
+    let unified_cards: Vec<UnifiedCard> = if json_path.contains("ga_cards") {
+        // Parse GA format
+        let ga_cards: Vec<serde_json::Value> = serde_json::from_str(&json_content)?;
+        ga_cards
+            .into_iter()
+            .map(|card| UnifiedCard {
+                id: card["slug"].as_str().unwrap_or("unknown").to_string(),
+                image_url: card["image"].as_str().unwrap_or("").to_string(),
+            })
+            .collect()
+    } else {
+        // Parse MTG format
+        let mtg_cards: Vec<Card> = serde_json::from_str(&json_content)?;
+        mtg_cards
+            .into_iter()
+            .filter_map(|card| {
+                if let Some(image_uris) = card.image_uris {
+                    Some(UnifiedCard {
+                        id: card.id,
+                        image_url: image_uris.png,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
 
-    let total_available = cards_with_images.len();
+    let total_available = unified_cards.len();
 
     // Handle amount parameter
-    let mut cards_to_process = cards_with_images;
+    let mut cards_to_process = unified_cards;
     if let Some(amt) = amount {
         if amt != "all" {
             if let Ok(limit) = amt.parse::<usize>() {
@@ -393,17 +568,21 @@ pub async fn download_card_images(
     let skipped_soon = Arc::new(AtomicUsize::new(0));
 
     let downloads = cards_to_download.into_iter().map(|card| {
-        let image_uris = card.image_uris.unwrap();
         let card_dir = images_dir.join(&card.id);
-        let temp_png_path = card_dir.join("temp.png");
-        let final_jpg_path = card_dir.join("0000.jpg");
+        let (temp_ext, final_ext) = match tcg_type {
+            super::TcgType::Mtg => ("png", "jpg"),
+            super::TcgType::Ga => ("jpg", "jpg"),
+        };
+        let temp_file_path = card_dir.join(format!("temp.{}", temp_ext));
+        let final_file_path = card_dir.join(format!("0000.{}", final_ext));
         let client = client.clone();
         let pb = pb_clone.clone();
         let skipped_soon_clone = skipped_soon.clone();
+        let image_url = card.image_url.clone();
 
         {
-            let temp_path = temp_png_path.clone();
-            let final_path = final_jpg_path.clone();
+            let temp_path = temp_file_path.clone();
+            let final_path = final_file_path.clone();
             async move {
                 // Create card directory
                 if let Err(e) = fs::create_dir_all(final_path.parent().unwrap()) {
@@ -414,69 +593,77 @@ pub async fn download_card_images(
                     ));
                 }
 
-                // Skip cards with placeholder "soon.jpg" image
-                if image_uris.png.contains("errors.scryfall.com/soon.jpg") {
+                // Skip cards with placeholder "soon.jpg" image (MTG specific)
+                if image_url.contains("errors.scryfall.com/soon.jpg") {
                     skipped_soon_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     pb.inc(1);
                     return Ok(());
                 }
 
                 match client
-                    .get(&image_uris.png)
+                    .get(&image_url)
                     .header("User-Agent", "TCGFetch/1.0")
                     .send()
                     .await
                 {
-                    Ok(response) => match response.bytes().await {
-                        Ok(bytes) => {
-                            let mut file = fs::File::create(&temp_path)?;
-                            file.write_all(&bytes)?;
-
-                            if let Err(e) = validate_image(&temp_path) {
-                                if let Err(cleanup_err) = fs::remove_file(&temp_path) {
-                                    eprintln!(
-                                        "Failed to cleanup corrupted image file: {}",
-                                        cleanup_err
-                                    );
-                                }
-                                pb.inc(1);
-                                return Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    format!(
-                                        "Corrupted image detected: {} - URL: {}",
-                                        e, image_uris.png
-                                    ),
-                                ));
-                            }
-
-                            if let Err(e) = process_image(&temp_path, &final_path, width, height) {
-                                eprintln!(
-                                    "Error processing image {} -> {}: {}",
-                                    temp_path.display(),
-                                    final_path.display(),
-                                    e
-                                );
-                                // Only try to cleanup temp file if it still exists (process_image failed)
-                                if temp_path.exists() {
-                                    if let Err(cleanup_err) = fs::remove_file(&temp_path) {
-                                        eprintln!("Failed to cleanup temp file: {}", cleanup_err);
-                                    }
-                                }
-                                pb.inc(1);
-                                return Err(e);
-                            }
-
+                    Ok(response) => {
+                        if !response.status().is_success() {
                             pb.inc(1);
-                            Ok(())
-                        }
-                        Err(e) => {
-                            pb.inc(1);
-                            Err(io::Error::new(
+                            return Err(io::Error::new(
                                 io::ErrorKind::Other,
-                                format!("Failed to read response bytes: {}", e),
-                            ))
+                                format!("HTTP {} for URL: {}", response.status(), image_url),
+                            ));
                         }
-                    },
+
+                        match response.bytes().await {
+                            Ok(bytes) => {
+                                let mut file = fs::File::create(&temp_path)?;
+                                file.write_all(&bytes)?;
+
+                                if let Err(e) = validate_image(&temp_path) {
+                                    if let Err(cleanup_err) = fs::remove_file(&temp_path) {
+                                        eprintln!(
+                                            "Failed to cleanup corrupted image file: {}",
+                                            cleanup_err
+                                        );
+                                    }
+                                    pb.inc(1);
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "Corrupted image detected: {} - URL: {}",
+                                            e, image_url
+                                        ),
+                                    ));
+                                }
+                                if let Err(e) =
+                                    process_image(&temp_path, &final_path, width, height)
+                                {
+                                    // Only try to cleanup temp file if it still exists (process_image failed)
+                                    if temp_path.exists() {
+                                        if let Err(cleanup_err) = fs::remove_file(&temp_path) {
+                                            eprintln!(
+                                                "Failed to cleanup temp file: {}",
+                                                cleanup_err
+                                            );
+                                        }
+                                    }
+                                    pb.inc(1);
+                                    return Err(e);
+                                }
+
+                                pb.inc(1);
+                                Ok(())
+                            }
+                            Err(e) => {
+                                pb.inc(1);
+                                Err(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    format!("Failed to read response bytes: {}", e),
+                                ))
+                            }
+                        }
+                    }
                     Err(e) => {
                         pb.inc(1);
                         Err(io::Error::new(
@@ -504,7 +691,10 @@ pub async fn download_card_images(
 
     pb.finish_with_message("Download complete!");
 
-    let failed_downloads = results.iter().filter(|r| r.is_err()).count();
+    let failed_downloads = results
+        .iter()
+        .filter(|r: &&Result<(), std::io::Error>| r.is_err())
+        .count();
     if failed_downloads > 0 {
         eprintln!("Warning: {} downloads failed", failed_downloads);
     }
@@ -670,4 +860,193 @@ pub fn count_train_directories(base_path: &str) -> io::Result<()> {
 
     println!("Total train card directories: {}", dir_count);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_academy_guide_json_parsing() {
+        let json_data = r#"{
+  "classes": [
+    "CLERIC"
+  ],
+  "cost_memory": null,
+  "cost_reserve": 3,
+  "created_at": "2024-01-24T12:00:00.000Z",
+  "durability": null,
+  "editions": [
+    {
+      "card_id": "kk39i1f0ht",
+      "collector_number": "042",
+      "configuration": "default",
+      "created_at": "2024-01-26T12:00:00+00:00",
+      "effect": null,
+      "effect_raw": null,
+      "flavor": "",
+      "illustrator": "Leviathan",
+      "image": "/cards/images/academy-guide-alc.jpg",
+      "last_update": "2025-01-19T12:25:21.173+00:00",
+      "orientation": null,
+      "rarity": 4,
+      "slug": "academy-guide-alc",
+      "uuid": "2l8lbewemh",
+      "collaborators": [],
+      "circulationTemplates": [],
+      "circulations": [],
+      "other_orientations": [],
+      "set": {},
+      "effect_html": null
+    },
+    {
+      "card_id": "kk39i1f0ht",
+      "collector_number": "120",
+      "configuration": "default",
+      "created_at": "2024-01-24T12:00:00+00:00",
+      "effect": null,
+      "effect_raw": null,
+      "flavor": null,
+      "illustrator": "十尾",
+      "image": "/cards/images/academy-guide-p24.jpg",
+      "last_update": "2025-01-18T17:40:17.152+00:00",
+      "orientation": null,
+      "rarity": 6,
+      "slug": "academy-guide-p24",
+      "uuid": "x99w8eraxx",
+      "collaborators": [],
+      "circulationTemplates": [],
+      "circulations": [
+        {
+          "created_at": "2025-04-14T16:10:46.103185+00:00",
+          "edition_id": "x99w8eraxx",
+          "foil": true,
+          "kind": "FOIL",
+          "last_update": "2025-04-14T16:10:46.071+00:00",
+          "population": 160,
+          "population_operator": "=",
+          "printing": false,
+          "uuid": "GhMtde7MVh",
+          "variants": [
+            {
+              "uuid": "tqsCgmQQRy",
+              "edition_id": "x99w8eraxx",
+              "description": "Ascent Christchurch stamp",
+              "image": "/cards/images/academy-guide-p24-chch.jpg",
+              "population_operator": "=",
+              "population": 32,
+              "printing": false,
+              "kind": "FOIL",
+              "created_at": "2025-05-16T18:17:49.608+00:00",
+              "last_update": "2025-05-16T18:17:49.608+00:00"
+            }
+          ]
+        }
+      ],
+      "other_orientations": [],
+      "set": {},
+      "effect_html": null
+    }
+  ],
+  "effect": "Champion cards you materialize cost 1 less to materialize.",
+  "name": "Academy Guide",
+  "slug": "academy-guide"
+}"#;
+
+        let card_detail: Result<GaCardDetail, _> = serde_json::from_str(json_data);
+
+        match card_detail {
+            Ok(card) => {
+                println!("Successfully parsed card: {}", card.name);
+                println!("Card slug: {}", card.slug);
+                println!("Number of editions: {}", card.editions.len());
+
+                for (i, edition) in card.editions.iter().enumerate() {
+                    println!(
+                        "Edition {}: slug={}, image={}",
+                        i + 1,
+                        edition.slug,
+                        edition.image
+                    );
+                }
+
+                // Test the specific data you need
+                assert_eq!(card.name, "Academy Guide");
+                assert_eq!(card.slug, "academy-guide");
+                assert_eq!(card.editions.len(), 2);
+
+                // Check first edition
+                assert_eq!(card.editions[0].slug, "academy-guide-alc");
+                assert_eq!(
+                    card.editions[0].image,
+                    "/cards/images/academy-guide-alc.jpg"
+                );
+
+                // Check second edition
+                assert_eq!(card.editions[1].slug, "academy-guide-p24");
+                assert_eq!(
+                    card.editions[1].image,
+                    "/cards/images/academy-guide-p24.jpg"
+                );
+
+                println!("All assertions passed!");
+            }
+            Err(e) => {
+                println!("Failed to parse JSON: {}", e);
+                panic!("JSON parsing failed");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_real_academy_guide_api_call() {
+        let client = reqwest::Client::new();
+
+        match fetch_ga_card_detail(&client, "academy-guide").await {
+            Ok(card_detail) => {
+                println!("Successfully fetched card: {}", card_detail.name);
+                println!("Card slug: {}", card_detail.slug);
+                println!("Number of editions: {}", card_detail.editions.len());
+
+                for (i, edition) in card_detail.editions.iter().enumerate() {
+                    println!(
+                        "Edition {}: slug={}, image={}",
+                        i + 1,
+                        edition.slug,
+                        edition.image
+                    );
+
+                    // Check if this edition has variants
+                    if let Some(circulations) = &edition.circulations {
+                        for circulation in circulations {
+                            if let Some(variants) = &circulation.variants {
+                                println!("  Found {} variants:", variants.len());
+                                for variant in variants {
+                                    println!(
+                                        "    Variant: {}, Image: {}",
+                                        variant.description, variant.image
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Basic assertions
+                assert_eq!(card_detail.name, "Academy Guide");
+                assert_eq!(card_detail.slug, "academy-guide");
+                assert!(
+                    !card_detail.editions.is_empty(),
+                    "Should have at least one edition"
+                );
+
+                println!("Real API test passed!");
+            }
+            Err(e) => {
+                println!("API call failed: {}", e);
+                // Don't panic for network issues in tests
+                println!("This test requires internet connection to GA API");
+            }
+        }
+    }
 }

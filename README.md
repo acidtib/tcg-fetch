@@ -5,6 +5,7 @@ A high-performance Rust CLI tool to fetch trading card game data from various AP
 ## Supported TCGs
 
 - **Magic: The Gathering (MTG)** - Fetches data from the Scryfall API
+- **Grand Archive (GA)** - Fetches data from the Grand Archive API
 
 ## Features
 
@@ -12,7 +13,7 @@ A high-performance Rust CLI tool to fetch trading card game data from various AP
 - **Smart batch checking** - Avoids unnecessary downloads by checking existing cards efficiently
 - Fetches card data from TCG-specific APIs
 - Downloads comprehensive card data including all available card information
-- Direct image resizing to specified dimensions (default: 384×512 pixels)
+- Direct image resizing to specified dimensions (default: 500×700 pixels)
 - Organizes data into train/test/validation sets with automatic splitting
 - Command-line interface with customizable output path
 - Progress indicators for downloads
@@ -43,10 +44,11 @@ cargo build --release
 
 ### Basic Usage
 
-Run the program with required TCG argument (currently only MTG is supported):
+Run the program with required TCG argument:
 
 ```bash
-cargo run -- mtg
+cargo run -- mtg    # For Magic: The Gathering
+cargo run -- ga     # For Grand Archive
 ```
 
 ### Image Processing Options
@@ -54,7 +56,8 @@ cargo run -- mtg
 Configure target image dimensions (images will be resized to fit exactly):
 
 ```bash
-cargo run -- mtg --width 512 --height 512    # Resize all images to 512×512 pixels
+cargo run -- mtg --width 512 --height 512    # Resize all MTG images to 512×512 pixels
+cargo run -- ga --width 512 --height 512     # Resize all GA images to 512×512 pixels
 ```
 
 ### Performance Tuning
@@ -62,7 +65,8 @@ cargo run -- mtg --width 512 --height 512    # Resize all images to 512×512 pix
 Control download performance and dataset size:
 
 ```bash
-cargo run -- mtg --amount 100 --threads 6    # Download 100 cards using 6 threads
+cargo run -- mtg --amount 100 --threads 6    # Download 100 MTG cards using 6 threads
+cargo run -- ga --amount 50 --threads 4      # Download 50 GA cards using 4 threads
 ```
 
 ### Custom Output Directory
@@ -70,7 +74,8 @@ cargo run -- mtg --amount 100 --threads 6    # Download 100 cards using 6 thread
 Specify a custom output directory:
 
 ```bash
-cargo run -- mtg --path custom-data-dir
+cargo run -- mtg --path custom-data-dir      # For MTG cards
+cargo run -- ga --path ga-cards-dir          # For GA cards
 ```
 
 ### Complete Example
@@ -78,7 +83,8 @@ cargo run -- mtg --path custom-data-dir
 Combine multiple options for full control:
 
 ```bash
-cargo run -- mtg --path custom-data-dir --amount 50 --threads 4 --width 512 --height 512
+cargo run -- mtg --path mtg-data --amount 50 --threads 4 --width 512 --height 512
+cargo run -- ga --path ga-data --amount 25 --threads 2 --width 400 --height 600
 ```
 
 ## Output Structure
@@ -98,7 +104,8 @@ The tool creates a directory with the following structure:
 │   │   └── <card-id>/
 │   │       └── 0000.jpg     # Validation image (copied from train)
 │   │       └── 0001.jpg
-└── all_cards.json
+└── all_cards.json               # For MTG
+└── ga_cards.json                # For Grand Archive
 ```
 
 Each card gets its own subdirectory named after the card ID. The primary image is saved as `0000.jpg`, with additional images numbered sequentially (0001.jpg, 0002.jpg, etc.) that can be added in the future.
@@ -109,14 +116,14 @@ Each card gets its own subdirectory named after the card ID. The primary image i
 Usage: tcg-fetch <TCG> [OPTIONS]
 
 Arguments:
-  <TCG>                          Trading card game type to fetch data for [possible values: mtg]
+  <TCG>                          Trading card game type to fetch data for [possible values: mtg, ga]
 
 Options:
   -p, --path <PATH>              Path where to save the data [default: tcg-data]
   -a, --amount <AMOUNT>          Amount of cards to fetch [default: all]
   -t, --threads <THREADS>        Number of threads to use for downloading images [default: CPU cores]
-      --width <WIDTH>            Target width for resized images [default: 384]
-      --height <HEIGHT>          Target height for resized images [default: 512]
+      --width <WIDTH>            Target width for resized images [default: 500]
+      --height <HEIGHT>          Target height for resized images [default: 700]
   -h, --help                     Print help
   -V, --version                  Print version
 ```

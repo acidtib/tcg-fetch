@@ -7,6 +7,8 @@ mod utils;
 enum TcgType {
     /// Magic: The Gathering
     Mtg,
+    /// Grand Archive
+    Ga,
 }
 
 /// Simple program to fetch trading card game data from various APIs
@@ -29,11 +31,11 @@ struct Args {
     threads: usize,
 
     /// Width for processed images
-    #[arg(long, default_value_t = 384)]
+    #[arg(long, default_value_t = 500)]
     width: u32,
 
     /// Height for processed images
-    #[arg(long, default_value_t = 512)]
+    #[arg(long, default_value_t = 700)]
     height: u32,
 }
 
@@ -67,6 +69,7 @@ async fn main() -> std::io::Result<()> {
                     args.threads,
                     args.width,
                     args.height,
+                    &args.tcg,
                 )
                 .await
                 {
