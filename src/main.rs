@@ -4,28 +4,21 @@ use std::thread;
 mod utils;
 
 #[derive(Debug, Clone, ValueEnum)]
-enum DataType {
-    /// Unique cards
-    Unique,
-    /// Oracle cards
-    Oracle,
-    /// Default cards
-    Default,
-    /// All cards
-    All,
+enum TcgType {
+    /// Magic: The Gathering
+    Mtg,
 }
 
-/// Simple program to fetch Magic: The Gathering card data from the Scryfall API
+/// Simple program to fetch trading card game data from various APIs
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
+    /// Trading card game type to fetch data for
+    #[arg(value_enum)]
+    tcg: TcgType,
     /// Path where to save the data
-    #[arg(short, long, default_value = "magic-data")]
+    #[arg(short, long, default_value = "tcg-data")]
     path: String,
-
-    /// Type of card data to fetch (unique, oracle, default, all)
-    #[arg(short, long, value_enum, default_value_t = DataType::Default)]
-    data: DataType,
 
     /// Amount of cards to fetch
     #[arg(short, long, default_value = "all")]
@@ -48,14 +41,15 @@ struct Args {
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
+    println!("TCG: {:?}", args.tcg);
     println!("Path: {}", args.path);
-    println!("Fetching data of type: {:?}", args.data);
+    println!("Fetching data of type: All");
 
     // Ensure the output directory exists
     utils::ensure_directories(&args.path)?;
 
     // Fetch and download JSON file for the selected data type
-    match utils::fetch_bulk_data(&args.path, &args.data).await {
+    match utils::fetch_bulk_data(&args.path, &args.tcg).await {
         Ok(files) => {
             println!("\nDownloaded JSON files:");
             for file in &files {

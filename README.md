@@ -1,13 +1,17 @@
-# Ojo Fetch Magic
+# TCG Fetch
 
-A high-performance Rust CLI tool to fetch Magic: The Gathering card data from the Scryfall API. This tool helps organize card data into train, test, and validation sets for machine learning applications.
+A high-performance Rust CLI tool to fetch trading card game data from various APIs. This tool helps organize card data into train, test, and validation sets for machine learning applications.
+
+## Supported TCGs
+
+- **Magic: The Gathering (MTG)** - Fetches data from the Scryfall API
 
 ## Features
 
 - **Fast parallel processing** - Uses all CPU cores for optimal performance
 - **Smart batch checking** - Avoids unnecessary downloads by checking existing cards efficiently
-- Fetches card data from Scryfall API
-- Downloads different types of card data (unique artwork, oracle cards, default cards, or all cards)
+- Fetches card data from TCG-specific APIs
+- Downloads comprehensive card data including all available card information
 - Direct image resizing to specified dimensions (default: 384×512 pixels)
 - Organizes data into train/test/validation sets with automatic splitting
 - Command-line interface with customizable output path
@@ -30,8 +34,8 @@ No configuration needed - optimizations are automatic!
 Make sure you have Rust and Cargo installed on your system. Then clone this repository:
 
 ```bash
-git clone https://github.com/acidtib/ojo-fetch-magic.git
-cd ojo-fetch-magic
+git clone https://github.com/acidtib/tcg-fetch.git
+cd tcg-fetch
 cargo build --release
 ```
 
@@ -39,21 +43,10 @@ cargo build --release
 
 ### Basic Usage
 
-Run the program with default settings (fetches default cards):
+Run the program with required TCG argument (currently only MTG is supported):
 
 ```bash
-cargo run
-```
-
-### Data Type Selection
-
-Specify the type of data to fetch using the `--data` or `-d` flag:
-
-```bash
-cargo run -- --data unique    # Download unique artwork data
-cargo run -- --data oracle    # Download oracle cards data
-cargo run -- --data default   # Download default cards data
-cargo run -- --data all       # Download all cards data
+cargo run -- mtg
 ```
 
 ### Image Processing Options
@@ -61,7 +54,7 @@ cargo run -- --data all       # Download all cards data
 Configure target image dimensions (images will be resized to fit exactly):
 
 ```bash
-cargo run -- --width 512 --height 512    # Resize all images to 512×512 pixels
+cargo run -- mtg --width 512 --height 512    # Resize all images to 512×512 pixels
 ```
 
 ### Performance Tuning
@@ -69,7 +62,7 @@ cargo run -- --width 512 --height 512    # Resize all images to 512×512 pixels
 Control download performance and dataset size:
 
 ```bash
-cargo run -- --amount 100 --threads 6    # Download 100 cards using 6 threads
+cargo run -- mtg --amount 100 --threads 6    # Download 100 cards using 6 threads
 ```
 
 ### Custom Output Directory
@@ -77,7 +70,7 @@ cargo run -- --amount 100 --threads 6    # Download 100 cards using 6 threads
 Specify a custom output directory:
 
 ```bash
-cargo run -- --path custom-data-dir
+cargo run -- mtg --path custom-data-dir
 ```
 
 ### Complete Example
@@ -85,7 +78,7 @@ cargo run -- --path custom-data-dir
 Combine multiple options for full control:
 
 ```bash
-cargo run -- --data oracle --path custom-data-dir --amount 50 --threads 4 --width 512 --height 512
+cargo run -- mtg --path custom-data-dir --amount 50 --threads 4 --width 512 --height 512
 ```
 
 ## Output Structure
@@ -105,17 +98,21 @@ The tool creates a directory with the following structure:
 │   │   └── <card-id>/
 │   │       └── 0000.jpg     # Validation image (copied from train)
 │   │       └── 0001.jpg
-└── <data-type>.json
+└── all_cards.json
 ```
 
-Each card gets its own subdirectory named after the card ID. The primary image is saved as `0000.jpg`, with additional images numbered sequentially (0001.jpg, 0002.jpg, etc.) ithat can be added in the future.
+Each card gets its own subdirectory named after the card ID. The primary image is saved as `0000.jpg`, with additional images numbered sequentially (0001.jpg, 0002.jpg, etc.) that can be added in the future.
 
 ## Command Line Options
 
 ```
+Usage: tcg-fetch <TCG> [OPTIONS]
+
+Arguments:
+  <TCG>                          Trading card game type to fetch data for [possible values: mtg]
+
 Options:
-  -p, --path <PATH>              Path where to save the data [default: magic-data]
-  -d, --data <DATA>              Type of card data to fetch [default: default] [possible values: unique, oracle, default, all]
+  -p, --path <PATH>              Path where to save the data [default: tcg-data]
   -a, --amount <AMOUNT>          Amount of cards to fetch [default: all]
   -t, --threads <THREADS>        Number of threads to use for downloading images [default: CPU cores]
       --width <WIDTH>            Target width for resized images [default: 384]
@@ -123,6 +120,14 @@ Options:
   -h, --help                     Print help
   -V, --version                  Print version
 ```
+
+## Adding New TCGs
+
+The codebase is designed to be extensible. To add support for a new TCG:
+
+1. Add a new variant to the `TcgType` enum in `main.rs`
+2. Add corresponding API URL, user agent, and data type mappings in `utils.rs`
+3. Implement any TCG-specific logic in the utility functions
 
 ## Dependencies
 
@@ -140,9 +145,9 @@ Options:
 ## Project Structure
 
 ```
-ojo-fetch-magic/
+tcg-fetch/
 ├── src/
-│   ├── main.rs           # Main application logic
+│   ├── main.rs           # Main application logic and CLI definition
 │   └── utils.rs          # Utility functions for API and file operations
 ├── Cargo.toml           # Rust dependencies
 └── README.md           # This file
@@ -150,7 +155,12 @@ ojo-fetch-magic/
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit a Pull Request. When adding support for new TCGs, please ensure:
+
+- The new TCG follows the existing pattern in the codebase
+- API rate limits are respected
+- Error handling is comprehensive
+- Documentation is updated accordingly
 
 ## License
 

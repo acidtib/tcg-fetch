@@ -12,21 +12,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio;
 
-// Map our data types to Scryfall's types
-pub const BULK_DATA_TYPES: [&str; 4] = [
-    "unique_artwork",
-    "oracle_cards",
-    "default_cards",
-    "all_cards",
-];
+// API data type for MTG (always uses all_cards)
+pub const BULK_DATA_TYPE: &str = "all_cards";
 
-// Map DataType enum to Scryfall's type strings
-pub fn get_scryfall_type(data_type: &super::DataType) -> &'static str {
-    match data_type {
-        super::DataType::Unique => "unique_artwork",
-        super::DataType::Oracle => "oracle_cards",
-        super::DataType::Default => "default_cards",
-        super::DataType::All => "all_cards",
+// Get API type for TCG (hardcoded to "all_cards" for MTG)
+pub fn get_api_type(tcg_type: &super::TcgType) -> &'static str {
+    match tcg_type {
+        super::TcgType::Mtg => BULK_DATA_TYPE,
+    }
+}
+
+// Get API URL based on TCG type
+pub fn get_api_url(tcg_type: &super::TcgType) -> &'static str {
+    match tcg_type {
+        super::TcgType::Mtg => "https://api.scryfall.com/bulk-data",
+    }
+}
+
+// Get user agent string based on TCG type
+pub fn get_user_agent(tcg_type: &super::TcgType) -> &'static str {
+    match tcg_type {
+        super::TcgType::Mtg => "TCGFetch-MTG/1.0",
     }
 }
 
@@ -86,19 +92,13 @@ pub fn ensure_directories(base_path: &str) -> io::Result<()> {
 
 pub fn check_json_files(directory: &str) -> Vec<String> {
     let base_path = Path::new(directory);
-    let required_json_files: Vec<(String, PathBuf)> = BULK_DATA_TYPES
-        .iter()
-        .map(|data_type| {
-            let path = base_path.join(format!("{}.json", data_type));
-            (path.to_string_lossy().into_owned(), path)
-        })
-        .collect();
+    let path = base_path.join(format!("{}.json", BULK_DATA_TYPE));
 
-    required_json_files
-        .into_par_iter()
-        .filter(|(_, path)| path.exists())
-        .map(|(file_str, _)| file_str)
-        .collect()
+    if path.exists() {
+        vec![path.to_string_lossy().into_owned()]
+    } else {
+        vec![]
+    }
 }
 
 async fn download_json_data(
@@ -113,7 +113,7 @@ async fn download_json_data(
 
     let response = client
         .get(download_uri)
-        .header("User-Agent", "OjoFetchMagic/1.0")
+        .header("User-Agent", "TCGFetch/1.0")
         .send()
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -133,9 +133,9 @@ async fn download_json_data(
 
 pub async fn fetch_bulk_data(
     directory: &str,
-    data_type: &super::DataType,
+    tcg_type: &super::TcgType,
 ) -> io::Result<Vec<String>> {
-    let target_type = get_scryfall_type(data_type);
+    let target_type = get_api_type(tcg_type);
     let existing_files = check_json_files(directory);
 
     // Check if we already have the JSON file
@@ -144,12 +144,15 @@ pub async fn fetch_bulk_data(
         return Ok(existing_files);
     }
 
-    println!("Fetching bulk data from Scryfall API...");
+    let api_name = match tcg_type {
+        super::TcgType::Mtg => "Scryfall API",
+    };
+    println!("Fetching bulk data from {}...", api_name);
     let client = reqwest::Client::new();
 
     let response = client
-        .get("https://api.scryfall.com/bulk-data")
-        .header("User-Agent", "OjoFetchMagic/1.0")
+        .get(get_api_url(tcg_type))
+        .header("User-Agent", get_user_agent(tcg_type))
         .send()
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Request error: {}", e)))?;
@@ -179,11 +182,14 @@ pub async fn fetch_bulk_data(
     }
 
     if downloaded_files.is_empty() {
+        let api_name = match tcg_type {
+            super::TcgType::Mtg => "Scryfall",
+        };
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "Data type '{}' not found in Scryfall bulk data",
-                target_type
+                "Data type '{}' not found in {} bulk data",
+                target_type, api_name
             ),
         ));
     }
@@ -408,7 +414,7 @@ pub async fn download_card_images(
                     ));
                 }
 
-                // Skip cards with Scryfall's placeholder "soon.jpg" image
+                // Skip cards with placeholder "soon.jpg" image
                 if image_uris.png.contains("errors.scryfall.com/soon.jpg") {
                     skipped_soon_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     pb.inc(1);
@@ -417,7 +423,7 @@ pub async fn download_card_images(
 
                 match client
                     .get(&image_uris.png)
-                    .header("User-Agent", "OjoFetchMagic/1.0")
+                    .header("User-Agent", "TCGFetch/1.0")
                     .send()
                     .await
                 {
@@ -565,7 +571,7 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     }
 
     println!(
-        "Moving {} cards to test and {} cards to validation",
+        "Copying {} cards to test and {} cards to validation",
         needed_test_cards, needed_valid_cards
     );
 
@@ -573,9 +579,9 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
     let mut rng = rand::rng();
     train_cards.shuffle(&mut rng);
 
-    // Move cards to test set in parallel if needed
+    // Copy cards to test set in parallel if needed
     if needed_test_cards > 0 && train_cards.len() >= needed_test_cards {
-        let test_cards: Vec<_> = train_cards.drain(0..needed_test_cards).collect();
+        let test_cards = &train_cards[0..needed_test_cards];
 
         test_cards
             .par_iter()
@@ -583,14 +589,14 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
                 let card_name = card_dir.file_name().unwrap();
                 let dest_dir = test_dir.join(card_name);
                 copy_card_directory(card_dir, &dest_dir)?;
-                fs::remove_dir_all(card_dir)?;
                 Ok(())
             })?;
     }
 
-    // Move cards to validation set in parallel if needed
-    if needed_valid_cards > 0 && train_cards.len() >= needed_valid_cards {
-        let valid_cards: Vec<_> = train_cards.drain(0..needed_valid_cards).collect();
+    // Copy cards to validation set in parallel if needed
+    let start_idx = needed_test_cards;
+    if needed_valid_cards > 0 && train_cards.len() >= (start_idx + needed_valid_cards) {
+        let valid_cards = &train_cards[start_idx..start_idx + needed_valid_cards];
 
         valid_cards
             .par_iter()
@@ -598,7 +604,6 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
                 let card_name = card_dir.file_name().unwrap();
                 let dest_dir = valid_dir.join(card_name);
                 copy_card_directory(card_dir, &dest_dir)?;
-                fs::remove_dir_all(card_dir)?;
                 Ok(())
             })?;
     }

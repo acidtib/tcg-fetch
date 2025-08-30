@@ -1,3 +1,4 @@
 /target
 
-/magic-data
+/tcg-data
+*-data/
