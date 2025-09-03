@@ -728,7 +728,7 @@ pub fn split_dataset(base_path: &str) -> io::Result<()> {
 
     // Calculate target numbers for test and validation sets
     let target_test_count = (total_cards as f32 * 0.03).ceil() as usize;
-    let target_valid_count = (total_cards as f32 * 0.01).ceil() as usize;
+    let target_valid_count = (total_cards as f32 * 0.03).ceil() as usize;
 
     // Calculate how many additional card directories we need
     let needed_test_cards = target_test_count.saturating_sub(existing_test_cards.len());
