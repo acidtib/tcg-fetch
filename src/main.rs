@@ -1,16 +1,11 @@
-use clap::ValueEnum;
 use clap::{Parser, Subcommand};
 use std::thread;
+
 mod augmentation;
+mod tcg;
 mod utils;
 
-#[derive(Debug, Clone, ValueEnum)]
-enum TcgType {
-    /// Magic: The Gathering
-    Mtg,
-    /// Grand Archive
-    Ga,
-}
+use tcg::TcgType;
 
 /// Simple program to fetch trading card game data from various APIs
 #[derive(Parser, Debug)]
@@ -81,10 +76,15 @@ async fn main() -> std::io::Result<()> {
             println!("Fetching data of type: All");
 
             // Ensure the output directory exists
-            utils::ensure_directories(&path)?;
+            utils::files::ensure_directories(&path)?;
 
             // Fetch and download JSON file for the selected data type
-            match utils::fetch_bulk_data(&path, &tcg).await {
+            let fetch_result = match tcg {
+                TcgType::Mtg => tcg::mtg::fetch_mtg_bulk_data(&path).await,
+                TcgType::Ga => tcg::ga::fetch_ga_all_cards(&path).await,
+            };
+
+            match fetch_result {
                 Ok(files) => {
                     println!("\nDownloaded JSON files:");
                     for file in &files {
@@ -95,7 +95,7 @@ async fn main() -> std::io::Result<()> {
                     let mut total_skipped_soon = 0;
                     for file in files {
                         println!("\nProcessing file: {}", file);
-                        match utils::download_card_images(
+                        match utils::images::download_card_images(
                             &file,
                             &path,
                             amount.as_deref(),
@@ -128,7 +128,7 @@ async fn main() -> std::io::Result<()> {
                     }
 
                     // Count and display the number of directories in train folder
-                    if let Err(e) = utils::count_train_directories(&path) {
+                    if let Err(e) = utils::files::count_train_directories(&path) {
                         eprintln!("Error counting train directories: {}", e);
                     }
                 }
