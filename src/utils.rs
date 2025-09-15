@@ -1,7 +1,7 @@
 use futures::stream::StreamExt;
 use image::GenericImageView;
 use indicatif::{ProgressBar, ProgressStyle};
-use rand::seq::SliceRandom;
+
 use rayon::prelude::*;
 use reqwest;
 use serde::Deserialize;
@@ -13,14 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio;
 
-// API data type for MTG (always uses all_cards)
-pub const BULK_DATA_TYPE: &str = "all_cards";
-
-// Get API type for TCG (hardcoded to "all_cards" for MTG)
+// Get API type for TCG
 pub fn get_api_type(tcg_type: &super::TcgType) -> &'static str {
     match tcg_type {
-        super::TcgType::Mtg => BULK_DATA_TYPE,
-        super::TcgType::Ga => "ga_cards", // Not used for GA but needed for consistency
+        super::TcgType::Mtg => "mtg_cards",
+        super::TcgType::Ga => "ga_cards",
     }
 }
 
@@ -33,11 +30,8 @@ pub fn get_api_url(tcg_type: &super::TcgType) -> &'static str {
 }
 
 // Get user agent string based on TCG type
-pub fn get_user_agent(tcg_type: &super::TcgType) -> &'static str {
-    match tcg_type {
-        super::TcgType::Mtg => "TCGFetch-MTG/1.0",
-        super::TcgType::Ga => "TCGFetch-GA/1.0",
-    }
+pub fn get_user_agent() -> &'static str {
+    "TCGFetch"
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,8 +93,6 @@ pub fn ensure_directories(base_path: &str) -> io::Result<()> {
         base_path.to_path_buf(),
         base_path.join("data"),
         base_path.join("data/train"),
-        base_path.join("data/test"),
-        base_path.join("data/validation"),
     ];
 
     // Check which directories don't exist
@@ -122,20 +114,14 @@ pub fn ensure_directories(base_path: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub fn check_json_files(directory: &str) -> Vec<String> {
+pub fn check_json_files(directory: &str, tcg_type: &super::TcgType) -> Vec<String> {
     let base_path = Path::new(directory);
     let mut existing_files = Vec::new();
 
-    // Check for MTG files
-    let mtg_path = base_path.join(format!("{}.json", BULK_DATA_TYPE));
-    if mtg_path.exists() {
-        existing_files.push(mtg_path.to_string_lossy().into_owned());
-    }
-
-    // Check for GA files
-    let ga_path = base_path.join("ga_cards.json");
-    if ga_path.exists() {
-        existing_files.push(ga_path.to_string_lossy().into_owned());
+    // Check for the specific TCG type file
+    let file_path = base_path.join(format!("{}.json", get_api_type(tcg_type)));
+    if file_path.exists() {
+        existing_files.push(file_path.to_string_lossy().into_owned());
     }
 
     existing_files
@@ -263,8 +249,9 @@ pub async fn fetch_bulk_data(
     match tcg_type {
         super::TcgType::Mtg => {
             // Existing MTG logic
-            let target_type = get_api_type(tcg_type);
-            let existing_files = check_json_files(directory);
+            let file_type = get_api_type(tcg_type); // For file naming
+            let scryfall_type = "all_cards"; // For Scryfall API
+            let existing_files = check_json_files(directory, tcg_type);
 
             if !existing_files.is_empty() {
                 println!("Using existing JSON files");
@@ -276,11 +263,14 @@ pub async fn fetch_bulk_data(
 
             let response = client
                 .get(get_api_url(tcg_type))
-                .header("User-Agent", get_user_agent(tcg_type))
+                .header("User-Agent", get_user_agent())
                 .send()
                 .await
                 .map_err(|e| {
-                    io::Error::new(io::ErrorKind::Other, format!("Request error: {}", e))
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Failed to send request: {}", e),
+                    )
                 })?;
 
             println!("Response status: {}", response.status());
@@ -300,9 +290,9 @@ pub async fn fetch_bulk_data(
             let mut downloaded_files = Vec::new();
 
             for item in bulk_data.data {
-                if item.data_type == target_type {
+                if item.data_type == scryfall_type {
                     let file_path =
-                        download_json_data(&target_type, &item.download_uri, directory).await?;
+                        download_json_data(&file_type, &item.download_uri, directory).await?;
                     downloaded_files.push(file_path);
                     break;
                 }
@@ -313,7 +303,7 @@ pub async fn fetch_bulk_data(
                     io::ErrorKind::NotFound,
                     format!(
                         "Data type '{}' not found in Scryfall bulk data",
-                        target_type
+                        scryfall_type
                     ),
                 ));
             }
@@ -322,7 +312,7 @@ pub async fn fetch_bulk_data(
         }
         super::TcgType::Ga => {
             // GA-specific logic
-            let existing_files = check_json_files(directory);
+            let existing_files = check_json_files(directory, tcg_type);
 
             if !existing_files.is_empty() {
                 println!("Using existing JSON files");
@@ -690,111 +680,6 @@ pub async fn download_card_images(
     Ok((final_skipped_existing, final_skipped_soon))
 }
 
-pub fn split_dataset(base_path: &str) -> io::Result<()> {
-    let train_dir = Path::new(base_path).join("data/train");
-    let test_dir = Path::new(base_path).join("data/test");
-    let valid_dir = Path::new(base_path).join("data/validation");
-
-    // Create directories if they don't exist
-    fs::create_dir_all(&test_dir)?;
-    fs::create_dir_all(&valid_dir)?;
-
-    // Get all directories in parallel
-    let get_dirs_parallel = |dir: &Path| -> io::Result<Vec<PathBuf>> {
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let entries: Vec<_> = fs::read_dir(dir)?.filter_map(|entry| entry.ok()).collect();
-
-        Ok(entries
-            .par_iter()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if path.is_dir() {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect())
-    };
-
-    let mut train_cards = get_dirs_parallel(&train_dir)?;
-    let existing_test_cards = get_dirs_parallel(&test_dir)?;
-    let existing_valid_cards = get_dirs_parallel(&valid_dir)?;
-
-    let total_cards = train_cards.len() + existing_test_cards.len() + existing_valid_cards.len();
-
-    // Calculate target numbers for test and validation sets
-    let target_test_count = (total_cards as f32 * 0.03).ceil() as usize;
-    let target_valid_count = (total_cards as f32 * 0.03).ceil() as usize;
-
-    // Calculate how many additional card directories we need
-    let needed_test_cards = target_test_count.saturating_sub(existing_test_cards.len());
-    let needed_valid_cards = target_valid_count.saturating_sub(existing_valid_cards.len());
-
-    if needed_test_cards == 0 && needed_valid_cards == 0 {
-        println!("Test and validation sets already have the correct number of card directories");
-        println!(
-            "Total cards: {}, Test: {}, Validation: {}",
-            total_cards,
-            existing_test_cards.len(),
-            existing_valid_cards.len()
-        );
-        return Ok(());
-    }
-
-    println!(
-        "Copying {} cards to test and {} cards to validation",
-        needed_test_cards, needed_valid_cards
-    );
-
-    // Shuffle train cards for random selection
-    let mut rng = rand::rng();
-    train_cards.shuffle(&mut rng);
-
-    // Copy cards to test set in parallel if needed
-    if needed_test_cards > 0 && train_cards.len() >= needed_test_cards {
-        let test_cards = &train_cards[0..needed_test_cards];
-
-        test_cards
-            .par_iter()
-            .try_for_each(|card_dir| -> io::Result<()> {
-                let card_name = card_dir.file_name().unwrap();
-                let dest_dir = test_dir.join(card_name);
-                copy_card_directory(card_dir, &dest_dir)?;
-                Ok(())
-            })?;
-    }
-
-    // Copy cards to validation set in parallel if needed
-    let start_idx = needed_test_cards;
-    if needed_valid_cards > 0 && train_cards.len() >= (start_idx + needed_valid_cards) {
-        let valid_cards = &train_cards[start_idx..start_idx + needed_valid_cards];
-
-        valid_cards
-            .par_iter()
-            .try_for_each(|card_dir| -> io::Result<()> {
-                let card_name = card_dir.file_name().unwrap();
-                let dest_dir = valid_dir.join(card_name);
-                copy_card_directory(card_dir, &dest_dir)?;
-                Ok(())
-            })?;
-    }
-
-    let final_train = train_cards.len();
-    let final_test = existing_test_cards.len() + needed_test_cards;
-    let final_valid = existing_valid_cards.len() + needed_valid_cards;
-
-    println!(
-        "Dataset split complete: Train: {}, Test: {}, Validation: {}",
-        final_train, final_test, final_valid
-    );
-
-    Ok(())
-}
-
 /// Batch check if card directories exist for faster filtering during download
 pub fn batch_check_existing_cards(base_path: &str, card_ids: &[String]) -> HashMap<String, bool> {
     let train_dir = Path::new(base_path).join("data/train");
@@ -807,23 +692,6 @@ pub fn batch_check_existing_cards(base_path: &str, card_ids: &[String]) -> HashM
             (card_id.clone(), final_jpg.exists())
         })
         .collect()
-}
-
-// Helper function to copy a card directory and all its contents
-fn copy_card_directory(src: &Path, dest: &Path) -> io::Result<()> {
-    fs::create_dir_all(dest)?;
-
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-
-        if src_path.is_file() {
-            fs::copy(&src_path, &dest_path)?;
-        }
-    }
-
-    Ok(())
 }
 
 pub fn count_train_directories(base_path: &str) -> io::Result<()> {
